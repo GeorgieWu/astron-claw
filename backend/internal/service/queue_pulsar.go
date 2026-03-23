@@ -219,16 +219,32 @@ func (q *PulsarQueue) EnsureGroup(_ context.Context, _ string, _ string) error {
 }
 
 func (q *PulsarQueue) Close() error {
-	var firstErr error
+	var errs []error
+
+	// Close all producers
 	q.producers.Range(func(key, value interface{}) bool {
-		value.(pulsar.Producer).Close()
+		producer := value.(pulsar.Producer)
+		producer.Close()
+		q.producers.Delete(key)
 		return true
 	})
+
+	// Close all consumers
 	q.consumers.Range(func(key, value interface{}) bool {
-		value.(pulsar.Consumer).Close()
+		consumer := value.(pulsar.Consumer)
+		consumer.Close()
+		q.consumers.Delete(key)
 		return true
 	})
+
+	// Close client
 	q.client.Close()
+
+	if len(errs) > 0 {
+		log.Error().Int("error_count", len(errs)).Msg("Pulsar queue closed with errors")
+		return fmt.Errorf("failed to close %d resource(s): %v", len(errs), errs[0])
+	}
+
 	log.Info().Msg("Pulsar queue closed")
-	return firstErr
+	return nil
 }
