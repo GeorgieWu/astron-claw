@@ -146,7 +146,7 @@ func (q *PulsarQueue) Consume(ctx context.Context, queueName, group, consumer st
 }
 
 func (q *PulsarQueue) Ack(ctx context.Context, queueName, group, messageID string) error {
-	consumerKey := queueName + ":" + group
+	consumerKey := queueName + ":" + group + ":"
 	// Find any consumer for this queue+group (consumer name suffix doesn't matter for ack)
 	var cons pulsar.Consumer
 	q.consumers.Range(func(key, value interface{}) bool {
@@ -219,6 +219,7 @@ func (q *PulsarQueue) EnsureGroup(_ context.Context, _ string, _ string) error {
 }
 
 func (q *PulsarQueue) Close() error {
+	var firstErr error
 	q.producers.Range(func(key, value interface{}) bool {
 		value.(pulsar.Producer).Close()
 		return true
@@ -229,5 +230,5 @@ func (q *PulsarQueue) Close() error {
 	})
 	q.client.Close()
 	log.Info().Msg("Pulsar queue closed")
-	return nil
+	return firstErr
 }
