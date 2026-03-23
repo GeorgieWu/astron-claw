@@ -73,6 +73,10 @@ func (q *RedisStreamQueue) Consume(ctx context.Context, queueName, group, consum
 		// NOGROUP — group hasn't been created yet
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "NOGROUP") {
+			// If context is cancelled, don't bother recreating (caller is shutting down)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			log.Warn().Str("stream", queueName).Str("group", group).Msg("Queue NOGROUP, recreating")
 			_ = q.EnsureGroup(ctx, queueName, group)
 			return nil, nil
