@@ -176,6 +176,7 @@ func (b *ConnectionBridge) cleanupExpiredBots(ctx context.Context, now float64) 
 		return
 	}
 	for _, tok := range expired {
+		b.NotifyBotDisconnected(tok)
 		b.queue.DeleteQueue(ctx, BotInboxPrefix+tok)
 		b.cleanupChatInboxes(ctx, tok)
 		b.rdb.Del(ctx, BotGenPrefix+tok)
@@ -337,6 +338,7 @@ func (b *ConnectionBridge) RemoveBotSessions(ctx context.Context, token string) 
 		// Bot may be on remote worker — push disconnect command
 		inbox := BotInboxPrefix + token
 		b.queue.Publish(ctx, inbox, `{"_disconnect":true}`)
+		b.NotifyBotDisconnected(token)
 		b.rdb.ZRem(ctx, BotAliveKey, token)
 		b.queue.DeleteQueue(ctx, BotInboxPrefix+token)
 		b.cleanupChatInboxes(ctx, token)
@@ -543,9 +545,25 @@ func (b *ConnectionBridge) NotifyBotConnected(token string) {
 	log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Bot status -> connected")
 }
 
-// NotifyBotDisconnected logs bot disconnection.
+// NotifyBotDisconnected logs bot disconnection and notifies all active chat inboxes.
 func (b *ConnectionBridge) NotifyBotDisconnected(token string) {
 	log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Bot status -> disconnected")
+
+	// Notify all active chat inboxes about bot disconnection
+	ctx := context.Background()
+	idxKey := ChatInboxIdxPrefix + token
+	inboxes, err := b.rdb.SMembers(ctx, idxKey).Result()
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to read chat inbox index for disconnect notification")
+		return
+	}
+
+	errorEvent := `{"type":"error","content":"Bot disconnected"}`
+	for _, inbox := range inboxes {
+		if _, err := b.queue.Publish(ctx, inbox, errorEvent); err != nil {
+			log.Warn().Err(err).Str("inbox", inbox).Msg("Failed to send disconnect event to chat inbox")
+		}
+	}
 }
 
 func (b *ConnectionBridge) sendToSession(ctx context.Context, token, sessionID string, event map[string]interface{}) {

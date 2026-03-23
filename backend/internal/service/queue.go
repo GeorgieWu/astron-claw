@@ -8,6 +8,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+
+	"astron-claw/backend/internal/config"
 )
 
 // MessageQueue is the backend-agnostic message queue interface.
@@ -19,6 +21,7 @@ type MessageQueue interface {
 	DeleteQueue(ctx context.Context, queueName string) error
 	Purge(ctx context.Context, queueName string) error
 	EnsureGroup(ctx context.Context, queueName, group string) error
+	Close() error
 }
 
 // QueueMessage represents a consumed message.
@@ -136,12 +139,19 @@ func (q *RedisStreamQueue) EnsureGroup(ctx context.Context, queueName, group str
 	return nil
 }
 
-// NewQueue creates a MessageQueue implementation based on queue type.
-func NewQueue(queueType string, rdb redis.UniversalClient, maxStreamLen int) (MessageQueue, error) {
-	switch queueType {
+func (q *RedisStreamQueue) Close() error {
+	// Redis Stream doesn't need explicit cleanup
+	return nil
+}
+
+// NewQueue creates a MessageQueue implementation based on config.
+func NewQueue(cfg config.QueueConfig, rdb redis.UniversalClient) (MessageQueue, error) {
+	switch cfg.Type {
 	case "redis_stream":
-		return NewRedisStreamQueue(rdb, maxStreamLen), nil
+		return NewRedisStreamQueue(rdb, cfg.MaxStreamLen), nil
+	case "pulsar":
+		return NewPulsarQueue(cfg.PulsarURL, cfg.PulsarTenant, cfg.PulsarNS)
 	default:
-		return nil, fmt.Errorf("unsupported queue type: %q", queueType)
+		return nil, fmt.Errorf("unsupported queue type: %q", cfg.Type)
 	}
 }

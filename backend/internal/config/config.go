@@ -82,9 +82,14 @@ type ServerConfig struct {
 }
 
 type QueueConfig struct {
-	Type         string
-	MaxStreamLen int
+	Type         string // "redis_stream" | "pulsar"
+	MaxStreamLen int    // Redis Stream 专用
 	BlockMs      int
+
+	// Pulsar 配置
+	PulsarURL    string // e.g. "pulsar://localhost:6650"
+	PulsarTenant string // e.g. "astron-claw"
+	PulsarNS     string // e.g. "bridge"
 }
 
 type StorageConfig struct {
@@ -167,6 +172,9 @@ func Load() *AppConfig {
 			Type:         getEnv("QUEUE_TYPE", "redis_stream"),
 			MaxStreamLen: getEnvInt("QUEUE_MAX_STREAM_LEN", 1000),
 			BlockMs:      getEnvInt("QUEUE_BLOCK_MS", 5000),
+			PulsarURL:    getEnv("PULSAR_URL", "pulsar://localhost:6650"),
+			PulsarTenant: getEnv("PULSAR_TENANT", "astron-claw"),
+			PulsarNS:     getEnv("PULSAR_NAMESPACE", "bridge"),
 		},
 		Storage: StorageConfig{
 			Type:           ossType,

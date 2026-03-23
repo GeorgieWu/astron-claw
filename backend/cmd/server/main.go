@@ -65,7 +65,7 @@ func main() {
 	mediaMgr := service.NewMediaManager(store)
 
 	// Initialize queue
-	queue, err := service.NewQueue(cfg.Queue.Type, rdb, cfg.Queue.MaxStreamLen)
+	queue, err := service.NewQueue(cfg.Queue, rdb)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create message queue")
 	}
@@ -125,6 +125,9 @@ func main() {
 	bridge.Shutdown()
 	telemetry.Shutdown()
 
+	if err := queue.Close(); err != nil {
+		log.Error().Err(err).Msg("Failed to close message queue")
+	}
 	if err := store.Close(); err != nil {
 		log.Error().Err(err).Msg("Failed to close storage")
 	}
