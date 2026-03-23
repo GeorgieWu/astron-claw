@@ -571,12 +571,6 @@ func (b *ConnectionBridge) sendToSession(ctx context.Context, token, sessionID s
 		return
 	}
 	inbox := ChatInboxPrefix + token + ":" + sessionID
-	exists, _ := b.rdb.Exists(ctx, inbox).Result()
-	if exists == 0 {
-		log.Debug().Str("token", pkg.SafePrefix(token, 10)).Str("session", pkg.SafePrefix(sessionID, 8)).
-			Msg("No active SSE consumer, skipping event")
-		return
-	}
 	data, _ := json.Marshal(event)
 	if _, err := b.queue.Publish(ctx, inbox, string(data)); err != nil {
 		if !b.shuttingDown.Load() {
