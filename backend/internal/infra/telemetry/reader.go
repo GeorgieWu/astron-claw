@@ -225,29 +225,29 @@ func RenderPrometheusExposition(ctx context.Context, rdb redis.UniversalClient) 
 	}
 
 	// Gauges
-	gaugePIDs, err := rdb.SMembers(ctx, KeyGaugePIDs).Result()
+	workerIDs, err := rdb.SMembers(ctx, KeyGaugePIDs).Result()
 	if err != nil {
-		log.Warn().Err(err).Msg("telemetry: failed to read gauge PIDs")
+		log.Warn().Err(err).Msg("telemetry: failed to read gauge worker IDs")
 	}
 	gaugeAgg := make(map[string]float64)
-	var deadPIDs []string
+	var deadWorkers []string
 
-	for _, pid := range gaugePIDs {
-		gk := GaugeKey(pid)
+	for _, wid := range workerIDs {
+		gk := GaugeKey(wid)
 		fields, err := rdb.HGetAll(ctx, gk).Result()
 		if err != nil {
-			log.Warn().Err(err).Str("pid", pid).Msg("telemetry: failed to read gauge data")
+			log.Warn().Err(err).Str("worker", wid).Msg("telemetry: failed to read gauge data")
 		}
 		if len(fields) == 0 {
-			deadPIDs = append(deadPIDs, pid)
+			deadWorkers = append(deadWorkers, wid)
 			continue
 		}
 		for field, val := range fields {
 			gaugeAgg[field] += parseFloat(val)
 		}
 	}
-	if len(deadPIDs) > 0 {
-		rdb.SRem(ctx, KeyGaugePIDs, toInterfaces(deadPIDs)...)
+	if len(deadWorkers) > 0 {
+		rdb.SRem(ctx, KeyGaugePIDs, toInterfaces(deadWorkers)...)
 	}
 
 	gaugeGroups := make(map[string][]struct {
@@ -284,12 +284,12 @@ func RenderPrometheusExposition(ctx context.Context, rdb redis.UniversalClient) 
 // ResetAllMetrics deletes all OTLP metric keys from Redis.
 func ResetAllMetrics(ctx context.Context, rdb redis.UniversalClient) error {
 	keys := []string{KeyCounters, KeyHistograms, KeyMeta, KeyResource}
-	pids, err := rdb.SMembers(ctx, KeyGaugePIDs).Result()
+	wids, err := rdb.SMembers(ctx, KeyGaugePIDs).Result()
 	if err != nil {
-		log.Warn().Err(err).Msg("telemetry: failed to read gauge PIDs for reset")
+		log.Warn().Err(err).Msg("telemetry: failed to read gauge worker IDs for reset")
 	}
-	for _, pid := range pids {
-		keys = append(keys, GaugeKey(pid))
+	for _, wid := range wids {
+		keys = append(keys, GaugeKey(wid))
 	}
 	keys = append(keys, KeyGaugePIDs)
 	return rdb.Del(ctx, keys...).Err()
