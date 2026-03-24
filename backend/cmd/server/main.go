@@ -115,6 +115,9 @@ func main() {
 
 	log.Info().Msg("Shutting down server...")
 
+	// Stop accepting new bot connections while HTTP server drains.
+	bridge.BeginDrain()
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

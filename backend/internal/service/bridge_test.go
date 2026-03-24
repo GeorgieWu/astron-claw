@@ -258,3 +258,14 @@ func TestGetNestedString(t *testing.T) {
 		t.Errorf("expected false for nil map, got true")
 	}
 }
+
+func TestBeginDrain(t *testing.T) {
+	bridge := &ConnectionBridge{}
+	if bridge.IsDraining() {
+		t.Error("expected IsDraining() == false initially")
+	}
+	bridge.BeginDrain()
+	if !bridge.IsDraining() {
+		t.Error("expected IsDraining() == true after BeginDrain()")
+	}
+}

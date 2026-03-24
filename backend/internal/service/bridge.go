@@ -78,6 +78,7 @@ type ConnectionBridge struct {
 	queue        MessageQueue
 	pollCancels  sync.Map // "bot:{token}" -> context.CancelFunc
 	shuttingDown atomic.Bool
+	draining     atomic.Bool
 	regMu        sync.Mutex
 	wg           sync.WaitGroup
 	ctx          context.Context
@@ -102,6 +103,16 @@ func (b *ConnectionBridge) Start() {
 	b.wg.Add(1)
 	go b.runHeartbeat()
 	log.Info().Str("worker", b.workerID).Msg("Bridge worker started")
+}
+
+// BeginDrain stops accepting new bot connections on this worker.
+func (b *ConnectionBridge) BeginDrain() {
+	b.draining.Store(true)
+}
+
+// IsDraining returns true when this worker is draining for shutdown.
+func (b *ConnectionBridge) IsDraining() bool {
+	return b.draining.Load()
 }
 
 func (b *ConnectionBridge) runHeartbeat() {
@@ -653,23 +664,34 @@ func (b *ConnectionBridge) pollBotInbox(ctx context.Context, token string, gen i
 func (b *ConnectionBridge) Shutdown() {
 	b.regMu.Lock()
 	b.shuttingDown.Store(true)
+	b.draining.Store(true)
 	b.regMu.Unlock()
 	log.Info().Str("worker", b.workerID).Msg("Bridge worker shutting down...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Close all bot connections and clean Redis
+	// Snapshot local bots
+	type botEntry struct {
+		token string
+		conn  *BotConn
+	}
+	var locals []botEntry
 	b.bots.Range(func(key, value interface{}) bool {
-		token := key.(string)
-		conn := value.(*BotConn)
-		_ = conn.Close(model.ErrWSServerRestart.Code, model.ErrWSServerRestart.Message)
-		b.rdb.ZRem(ctx, BotAliveKey, token)
-		b.queue.DeleteQueue(ctx, BotInboxPrefix+token)
-		b.cleanupChatInboxes(ctx, token)
-		b.rdb.Del(ctx, BotGenPrefix+token)
+		locals = append(locals, botEntry{token: key.(string), conn: value.(*BotConn)})
 		return true
 	})
+
+	// Close local bot connections so clients can reconnect elsewhere.
+	for _, e := range locals {
+		_ = e.conn.Close(model.ErrWSServerRestart.Code, model.ErrWSServerRestart.Message)
+	}
+
+	// Reuse UnregisterBot() so Redis cleanup remains guarded by generation
+	// ownership. A newer worker may already have taken over.
+	for _, e := range locals {
+		b.UnregisterBot(ctx, e.token, e.conn)
+	}
 
 	// Cancel all poll tasks
 	b.pollCancels.Range(func(key, value interface{}) bool {
