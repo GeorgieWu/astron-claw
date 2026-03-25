@@ -28,9 +28,9 @@ const (
 	CleanupLockKey     = "bridge:cleanup_lock"
 	BotGenPrefix       = "bridge:bot_gen:"
 
-	BotTTL             = 30 * time.Second
-	HeartbeatInterval  = 10 * time.Second
-	ConsumeBlockMs     = 5000 // keep as int for blockMs parameter
+	BotTTL            = 30 * time.Second
+	HeartbeatInterval = 10 * time.Second
+	ConsumeBlockMs    = 5000 // keep as int for blockMs parameter
 )
 
 // BotConn wraps a websocket.Conn with a write mutex for thread safety.
@@ -306,20 +306,12 @@ func (b *ConnectionBridge) UnregisterBot(ctx context.Context, token string, conn
 	b.regMu.Unlock()
 
 	// Cross-worker guard
-	remoteGenRaw, err := b.rdb.Get(ctx, BotGenPrefix+token).Result()
-	if err == nil {
-		remoteGen, err := strconv.ParseInt(remoteGenRaw, 10, 64)
-		if err == nil && remoteGen > localGen {
-			log.Info().Int64("remote_gen", remoteGen).Int64("local_gen", localGen).
-				Str("token", pkg.SafePrefix(token, 10)).Msg("Skip Redis cleanup: newer gen exists")
-			return
-		}
+	if b.shouldSkipSharedCleanup(ctx, token, localGen, "unregister") {
+		return
 	}
 
 	// Clean Redis state
-	b.rdb.ZRem(ctx, BotAliveKey, token)
-	b.queue.DeleteQueue(ctx, BotInboxPrefix+token)
-	b.cleanupChatInboxes(ctx, token)
+	b.cleanupSharedBotState(ctx, token, true)
 	log.Info().Str("worker", b.workerID).Str("token", pkg.SafePrefix(token, 10)).Msg("Bot unregistered")
 }
 
@@ -548,6 +540,40 @@ func (b *ConnectionBridge) NotifyBotDisconnected(token string) {
 	log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Bot status -> disconnected")
 }
 
+func (b *ConnectionBridge) shouldSkipSharedCleanup(ctx context.Context, token string, localGen int64, source string) bool {
+	remoteGenRaw, err := b.rdb.Get(ctx, BotGenPrefix+token).Result()
+	if err != nil {
+		return false
+	}
+
+	remoteGen, err := strconv.ParseInt(remoteGenRaw, 10, 64)
+	if err != nil {
+		return false
+	}
+
+	if remoteGen > localGen {
+		log.Info().
+			Int64("remote_gen", remoteGen).
+			Int64("local_gen", localGen).
+			Str("worker", b.workerID).
+			Str("source", source).
+			Str("token", pkg.SafePrefix(token, 10)).
+			Msg("Skip Redis cleanup: newer gen exists")
+		return true
+	}
+
+	return false
+}
+
+func (b *ConnectionBridge) cleanupSharedBotState(ctx context.Context, token string, deleteGen bool) {
+	b.rdb.ZRem(ctx, BotAliveKey, token)
+	b.queue.DeleteQueue(ctx, BotInboxPrefix+token)
+	b.cleanupChatInboxes(ctx, token)
+	if deleteGen {
+		b.rdb.Del(ctx, BotGenPrefix+token)
+	}
+}
+
 func (b *ConnectionBridge) sendToSession(ctx context.Context, token, sessionID string, event map[string]interface{}) {
 	if b.shuttingDown.Load() {
 		return
@@ -663,11 +689,16 @@ func (b *ConnectionBridge) Shutdown() {
 	b.bots.Range(func(key, value interface{}) bool {
 		token := key.(string)
 		conn := value.(*BotConn)
+		localGenI, _ := b.botGens.Load(token)
+		var localGen int64
+		if localGenI != nil {
+			localGen = localGenI.(int64)
+		}
+
 		_ = conn.Close(model.ErrWSServerRestart.Code, model.ErrWSServerRestart.Message)
-		b.rdb.ZRem(ctx, BotAliveKey, token)
-		b.queue.DeleteQueue(ctx, BotInboxPrefix+token)
-		b.cleanupChatInboxes(ctx, token)
-		b.rdb.Del(ctx, BotGenPrefix+token)
+		if !b.shouldSkipSharedCleanup(ctx, token, localGen, "shutdown") {
+			b.cleanupSharedBotState(ctx, token, true)
+		}
 		return true
 	})
 
