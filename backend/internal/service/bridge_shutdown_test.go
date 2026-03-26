@@ -209,6 +209,53 @@ func TestCleanupLoopDoesNotOverlapAcrossWorkers(t *testing.T) {
 	}
 }
 
+func TestHeartbeatRefreshDoesNotBlockOnGenerationReads(t *testing.T) {
+	rdb := newLocalRedisForBridgeTest(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	token := "sk-heartbeat-" + uuid.NewString()[:8]
+	cleanupBridgeTestKeys(t, ctx, rdb, token)
+
+	wrapped := &blockingGetRedis{
+		UniversalClient: rdb,
+		blockPrefix:     BotGenPrefix,
+		releaseCh:       make(chan struct{}),
+	}
+
+	bridge := NewConnectionBridge(wrapped, nil, noopQueue{})
+	bridge.heartbeatInterval = 100 * time.Millisecond
+	bridge.cleanupInterval = time.Minute
+	bridge.cleanupLockTTL = time.Second
+
+	bot, client := newTestBotConn(t)
+	defer client.Close()
+	defer func() {
+		close(wrapped.releaseCh)
+		bridge.Shutdown()
+		cleanupBridgeTestKeys(t, context.Background(), rdb, token)
+	}()
+
+	initialScore := float64(time.Now().Add(-time.Minute).Unix())
+	if err := rdb.ZAdd(ctx, BotAliveKey, redis.Z{Score: initialScore, Member: token}).Err(); err != nil {
+		t.Fatalf("seed alive score: %v", err)
+	}
+
+	bridge.bots.Store(token, bot)
+	bridge.botGens.Store(token, int64(1))
+	bridge.Start()
+
+	time.Sleep(500 * time.Millisecond)
+
+	score, err := rdb.ZScore(ctx, BotAliveKey, token).Result()
+	if err != nil {
+		t.Fatalf("ZScore: %v", err)
+	}
+	if score <= initialScore {
+		t.Fatalf("expected heartbeat refresh without waiting on generation GET, initial=%v current=%v", initialScore, score)
+	}
+}
+
 func newLocalRedisForBridgeTest(t *testing.T) redis.UniversalClient {
 	t.Helper()
 
@@ -406,4 +453,51 @@ func (s *blockingQueueState) Release() {
 	s.releaseOnce.Do(func() {
 		close(s.releaseCh)
 	})
+}
+
+type noopQueue struct{}
+
+func (noopQueue) Publish(ctx context.Context, queueName, message string) (string, error) {
+	return "", nil
+}
+
+func (noopQueue) Consume(ctx context.Context, queueName, group, consumer string, blockMs int) (*QueueMessage, error) {
+	return nil, nil
+}
+
+func (noopQueue) Ack(ctx context.Context, queueName, group, messageID string) error {
+	return nil
+}
+
+func (noopQueue) DeleteMessage(ctx context.Context, queueName, messageID string) error {
+	return nil
+}
+
+func (noopQueue) DeleteQueue(ctx context.Context, queueName string) error {
+	return nil
+}
+
+func (noopQueue) Purge(ctx context.Context, queueName string) error {
+	return nil
+}
+
+func (noopQueue) EnsureGroup(ctx context.Context, queueName, group string) error {
+	return nil
+}
+
+type blockingGetRedis struct {
+	redis.UniversalClient
+	blockPrefix string
+	releaseCh   chan struct{}
+}
+
+func (c *blockingGetRedis) Get(ctx context.Context, key string) *redis.StringCmd {
+	if strings.HasPrefix(key, c.blockPrefix) {
+		select {
+		case <-ctx.Done():
+			return redis.NewStringResult("", ctx.Err())
+		case <-c.releaseCh:
+		}
+	}
+	return c.UniversalClient.Get(ctx, key)
 }

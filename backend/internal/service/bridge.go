@@ -169,23 +169,6 @@ func (b *ConnectionBridge) doHeartbeat() {
 	ctx := b.ctx
 	now := time.Now().Unix()
 
-	// Cross-worker eviction check
-	b.botGens.Range(func(key, value interface{}) bool {
-		token := key.(string)
-		localGen := value.(int64)
-		remoteGenRaw, err := b.rdb.Get(ctx, BotGenPrefix+token).Result()
-		if err == nil {
-			remoteGen, err := strconv.ParseInt(remoteGenRaw, 10, 64)
-			if err == nil && remoteGen > localGen {
-				log.Info().Int64("remote_gen", remoteGen).Int64("local_gen", localGen).
-					Str("worker", b.workerID).Str("token", pkg.SafePrefix(token, 10)).
-					Msg("Heartbeat eviction")
-				b.evictLocal(token)
-			}
-		}
-		return true
-	})
-
 	// Refresh ZSET scores
 	mapping := make(map[string]float64)
 	b.bots.Range(func(key, _ interface{}) bool {
