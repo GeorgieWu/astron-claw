@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -106,6 +108,107 @@ func TestShutdownDoesNotResetGenerationForNextTakeover(t *testing.T) {
 	}
 }
 
+func TestHeartbeatRefreshContinuesWhileCleanupRuns(t *testing.T) {
+	rdb := newLocalRedisForBridgeTest(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+
+	liveToken := "sk-live-" + uuid.NewString()[:8]
+	expiredToken := "sk-expired-" + uuid.NewString()[:8]
+	cleanupBridgeTestKeys(t, ctx, rdb, liveToken)
+	cleanupBridgeTestKeys(t, ctx, rdb, expiredToken)
+
+	queue := newBlockingQueue()
+	bridge := NewConnectionBridge(rdb, nil, queue)
+	bridge.heartbeatInterval = 100 * time.Millisecond
+	bridge.cleanupInterval = 100 * time.Millisecond
+	bridge.cleanupLockTTL = 300 * time.Millisecond
+	defer func() {
+		queue.Release()
+		bridge.Shutdown()
+		cleanupBridgeTestKeys(t, context.Background(), rdb, liveToken)
+		cleanupBridgeTestKeys(t, context.Background(), rdb, expiredToken)
+	}()
+
+	bot, client := newTestBotConn(t)
+	defer client.Close()
+	if err := bridge.RegisterBot(ctx, liveToken, bot); err != nil {
+		t.Fatalf("RegisterBot: %v", err)
+	}
+
+	if err := rdb.ZAdd(ctx, BotAliveKey, redis.Z{
+		Score:  float64(time.Now().Add(-BotTTL - time.Second).Unix()),
+		Member: expiredToken,
+	}).Err(); err != nil {
+		t.Fatalf("seed expired token: %v", err)
+	}
+
+	bridge.Start()
+
+	if !queue.WaitForDeletes(1, 2*time.Second) {
+		t.Fatal("expected cleanup to start and block")
+	}
+
+	firstScore, err := rdb.ZScore(ctx, BotAliveKey, liveToken).Result()
+	if err != nil {
+		t.Fatalf("first ZScore: %v", err)
+	}
+
+	time.Sleep(1500 * time.Millisecond)
+
+	secondScore, err := rdb.ZScore(ctx, BotAliveKey, liveToken).Result()
+	if err != nil {
+		t.Fatalf("second ZScore: %v", err)
+	}
+
+	if secondScore <= firstScore {
+		t.Fatalf("expected heartbeat to keep refreshing during cleanup, first=%v second=%v", firstScore, secondScore)
+	}
+}
+
+func TestCleanupLoopDoesNotOverlapAcrossWorkers(t *testing.T) {
+	rdb := newLocalRedisForBridgeTest(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	expiredToken := "sk-expired-" + uuid.NewString()[:8]
+	cleanupBridgeTestKeys(t, ctx, rdb, expiredToken)
+
+	queueState := newBlockingQueueState()
+	bridgeA := NewConnectionBridge(rdb, nil, newBlockingQueueWithState(queueState))
+	bridgeB := NewConnectionBridge(rdb, nil, newBlockingQueueWithState(queueState))
+	bridgeA.heartbeatInterval = 100 * time.Millisecond
+	bridgeA.cleanupInterval = 100 * time.Millisecond
+	bridgeA.cleanupLockTTL = 300 * time.Millisecond
+	bridgeB.heartbeatInterval = 100 * time.Millisecond
+	bridgeB.cleanupInterval = 100 * time.Millisecond
+	bridgeB.cleanupLockTTL = 300 * time.Millisecond
+	defer func() {
+		queueState.Release()
+		bridgeA.Shutdown()
+		bridgeB.Shutdown()
+		cleanupBridgeTestKeys(t, context.Background(), rdb, expiredToken)
+	}()
+
+	if err := rdb.ZAdd(ctx, BotAliveKey, redis.Z{
+		Score:  float64(time.Now().Add(-BotTTL - time.Second).Unix()),
+		Member: expiredToken,
+	}).Err(); err != nil {
+		t.Fatalf("seed expired token: %v", err)
+	}
+
+	bridgeA.Start()
+	bridgeB.Start()
+
+	if !queueState.WaitForDeletes(1, 2*time.Second) {
+		t.Fatal("expected first cleanup to start")
+	}
+
+	if queueState.WaitForDeletes(2, bridgeA.cleanupLockTTL+250*time.Millisecond) {
+		t.Fatalf("expected cleanup lock to prevent overlapping deletes, got %d calls", queueState.DeleteCalls())
+	}
+}
+
 func newLocalRedisForBridgeTest(t *testing.T) redis.UniversalClient {
 	t.Helper()
 
@@ -194,4 +297,113 @@ func newTestBotConn(t *testing.T) (*BotConn, *websocket.Conn) {
 	}
 
 	return &BotConn{Conn: serverConn}, clientConn
+}
+
+type blockingQueue struct {
+	state *blockingQueueState
+}
+
+func newBlockingQueue() *blockingQueue {
+	return &blockingQueue{state: newBlockingQueueState()}
+}
+
+func newBlockingQueueWithState(state *blockingQueueState) *blockingQueue {
+	return &blockingQueue{state: state}
+}
+
+func (q *blockingQueue) Publish(ctx context.Context, queueName, message string) (string, error) {
+	return "", nil
+}
+
+func (q *blockingQueue) Consume(ctx context.Context, queueName, group, consumer string, blockMs int) (*QueueMessage, error) {
+	select {
+	case <-ctx.Done():
+		return nil, nil
+	case <-time.After(25 * time.Millisecond):
+		return nil, nil
+	}
+}
+
+func (q *blockingQueue) Ack(ctx context.Context, queueName, group, messageID string) error {
+	return nil
+}
+
+func (q *blockingQueue) DeleteMessage(ctx context.Context, queueName, messageID string) error {
+	return nil
+}
+
+func (q *blockingQueue) DeleteQueue(ctx context.Context, queueName string) error {
+	q.state.notifyDelete()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-q.state.releaseCh:
+		return nil
+	}
+}
+
+func (q *blockingQueue) Purge(ctx context.Context, queueName string) error {
+	return nil
+}
+
+func (q *blockingQueue) EnsureGroup(ctx context.Context, queueName, group string) error {
+	return nil
+}
+
+func (q *blockingQueue) WaitForDeletes(target int, timeout time.Duration) bool {
+	return q.state.WaitForDeletes(target, timeout)
+}
+
+func (q *blockingQueue) Release() {
+	q.state.Release()
+}
+
+type blockingQueueState struct {
+	deleteCalls atomic.Int32
+	deleteCh    chan struct{}
+	releaseCh   chan struct{}
+	releaseOnce sync.Once
+}
+
+func newBlockingQueueState() *blockingQueueState {
+	return &blockingQueueState{
+		deleteCh:  make(chan struct{}, 32),
+		releaseCh: make(chan struct{}),
+	}
+}
+
+func (s *blockingQueueState) notifyDelete() {
+	s.deleteCalls.Add(1)
+	select {
+	case s.deleteCh <- struct{}{}:
+	default:
+	}
+}
+
+func (s *blockingQueueState) WaitForDeletes(target int, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	for {
+		if int(s.deleteCalls.Load()) >= target {
+			return true
+		}
+
+		select {
+		case <-deadline.C:
+			return int(s.deleteCalls.Load()) >= target
+		case <-s.deleteCh:
+		}
+	}
+}
+
+func (s *blockingQueueState) DeleteCalls() int {
+	return int(s.deleteCalls.Load())
+}
+
+func (s *blockingQueueState) Release() {
+	s.releaseOnce.Do(func() {
+		close(s.releaseCh)
+	})
 }

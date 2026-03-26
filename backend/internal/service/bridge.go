@@ -30,7 +30,24 @@ const (
 
 	BotTTL            = 30 * time.Second
 	HeartbeatInterval = 10 * time.Second
+	CleanupInterval   = 10 * time.Second
+	CleanupLockTTL    = 2 * time.Minute
 	ConsumeBlockMs    = 5000 // keep as int for blockMs parameter
+)
+
+var (
+	extendCleanupLockScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+	return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+return 0
+`)
+	releaseCleanupLockScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+	return redis.call("DEL", KEYS[1])
+end
+return 0
+`)
 )
 
 // BotConn wraps a websocket.Conn with a write mutex for thread safety.
@@ -82,31 +99,39 @@ type ConnectionBridge struct {
 	wg           sync.WaitGroup
 	ctx          context.Context
 	cancel       context.CancelFunc
+
+	heartbeatInterval time.Duration
+	cleanupInterval   time.Duration
+	cleanupLockTTL    time.Duration
 }
 
 // NewConnectionBridge creates a new ConnectionBridge.
 func NewConnectionBridge(rdb redis.UniversalClient, sessionStore *SessionStore, queue MessageQueue) *ConnectionBridge {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ConnectionBridge{
-		workerID:     uuid.New().String()[:12],
-		rdb:          rdb,
-		sessionStore: sessionStore,
-		queue:        queue,
-		ctx:          ctx,
-		cancel:       cancel,
+		workerID:          uuid.New().String()[:12],
+		rdb:               rdb,
+		sessionStore:      sessionStore,
+		queue:             queue,
+		ctx:               ctx,
+		cancel:            cancel,
+		heartbeatInterval: HeartbeatInterval,
+		cleanupInterval:   CleanupInterval,
+		cleanupLockTTL:    CleanupLockTTL,
 	}
 }
 
 // Start begins the heartbeat goroutine.
 func (b *ConnectionBridge) Start() {
-	b.wg.Add(1)
+	b.wg.Add(2)
 	go b.runHeartbeat()
+	go b.runCleanup()
 	log.Info().Str("worker", b.workerID).Msg("Bridge worker started")
 }
 
 func (b *ConnectionBridge) runHeartbeat() {
 	defer b.wg.Done()
-	ticker := time.NewTicker(HeartbeatInterval)
+	ticker := time.NewTicker(b.heartbeatInterval)
 	defer ticker.Stop()
 
 	for {
@@ -118,6 +143,24 @@ func (b *ConnectionBridge) runHeartbeat() {
 				return
 			}
 			b.doHeartbeat()
+		}
+	}
+}
+
+func (b *ConnectionBridge) runCleanup() {
+	defer b.wg.Done()
+	ticker := time.NewTicker(b.cleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-ticker.C:
+			if b.shuttingDown.Load() {
+				return
+			}
+			b.doCleanup()
 		}
 	}
 }
@@ -158,12 +201,28 @@ func (b *ConnectionBridge) doHeartbeat() {
 			log.Warn().Err(err).Msg("Failed to refresh bot heartbeat scores")
 		}
 	}
+}
+
+func (b *ConnectionBridge) doCleanup() {
+	ctx := b.ctx
+	now := time.Now().Unix()
 
 	// Compete for cleanup lock
-	acquired, _ := b.rdb.SetNX(ctx, CleanupLockKey, b.workerID, HeartbeatInterval).Result()
-	if acquired {
-		b.cleanupExpiredBots(ctx, float64(now))
+	acquired, _ := b.rdb.SetNX(ctx, CleanupLockKey, b.workerID, b.cleanupLockTTL).Result()
+	if !acquired {
+		return
 	}
+
+	stopRenew := make(chan struct{})
+	renewDone := make(chan struct{})
+	go b.renewCleanupLock(stopRenew, renewDone)
+	defer func() {
+		close(stopRenew)
+		<-renewDone
+		b.releaseCleanupLock()
+	}()
+
+	b.cleanupExpiredBots(ctx, float64(now))
 }
 
 func (b *ConnectionBridge) cleanupExpiredBots(ctx context.Context, now float64) {
@@ -182,6 +241,51 @@ func (b *ConnectionBridge) cleanupExpiredBots(ctx context.Context, now float64) 
 	}
 	b.rdb.ZRemRangeByScore(ctx, BotAliveKey, "-inf", fmt.Sprintf("%f", cutoff))
 	log.Info().Int("count", len(expired)).Msg("Cleanup: removed expired bot(s)")
+}
+
+func (b *ConnectionBridge) renewCleanupLock(stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+
+	interval := b.cleanupLockTTL / 2
+	if interval <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-b.ctx.Done():
+			return
+		case <-ticker.C:
+			if err := extendCleanupLockScript.Run(
+				b.ctx,
+				b.rdb,
+				[]string{CleanupLockKey},
+				b.workerID,
+				b.cleanupLockTTL.Milliseconds(),
+			).Err(); err != nil && err != redis.Nil {
+				log.Warn().Err(err).Str("worker", b.workerID).Msg("Failed to renew cleanup lock")
+			}
+		}
+	}
+}
+
+func (b *ConnectionBridge) releaseCleanupLock() {
+	releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := releaseCleanupLockScript.Run(
+		releaseCtx,
+		b.rdb,
+		[]string{CleanupLockKey},
+		b.workerID,
+	).Err(); err != nil && err != redis.Nil {
+		log.Warn().Err(err).Str("worker", b.workerID).Msg("Failed to release cleanup lock")
+	}
 }
 
 func (b *ConnectionBridge) cleanupChatInboxes(ctx context.Context, token string) {
