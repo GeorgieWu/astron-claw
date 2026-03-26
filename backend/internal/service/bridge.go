@@ -23,16 +23,24 @@ import (
 const (
 	BotAliveKey        = "bridge:bot_alive"
 	BotInboxPrefix     = "bridge:bot_inbox:"
+	BotOwnerPrefix     = "bridge:bot_owner:"
 	ChatInboxPrefix    = "bridge:chat_inbox:"
 	ChatInboxIdxPrefix = "bridge:chat_inbox_idx:"
 	CleanupLockKey     = "bridge:cleanup_lock"
 	BotGenPrefix       = "bridge:bot_gen:"
+	WorkerInboxPrefix  = "bridge:worker_inbox:"
 
 	BotTTL            = 30 * time.Second
 	HeartbeatInterval = 10 * time.Second
 	CleanupInterval   = 10 * time.Second
 	CleanupLockTTL    = 2 * time.Minute
+	ReconcileInterval = 5 * time.Second
 	ConsumeBlockMs    = 5000 // keep as int for blockMs parameter
+	WorkerInboxGroup  = "worker"
+
+	DefaultWorkerInboxConsumers   = 4
+	DefaultReconcileBatchSize     = 128
+	DefaultArtifactCleanupWorkers = 2
 )
 
 var (
@@ -93,39 +101,58 @@ type ConnectionBridge struct {
 	rdb          redis.UniversalClient
 	sessionStore *SessionStore
 	queue        MessageQueue
-	pollCancels  sync.Map // "bot:{token}" -> context.CancelFunc
 	shuttingDown atomic.Bool
 	regMu        sync.Mutex
 	wg           sync.WaitGroup
 	ctx          context.Context
 	cancel       context.CancelFunc
 
-	heartbeatInterval time.Duration
-	cleanupInterval   time.Duration
-	cleanupLockTTL    time.Duration
+	heartbeatInterval      time.Duration
+	cleanupInterval        time.Duration
+	cleanupLockTTL         time.Duration
+	reconcileInterval      time.Duration
+	reconcileBatchSize     int
+	workerInboxConsumers   int
+	artifactCleanupWorkers int
+
+	reconcileMu       sync.Mutex
+	reconcileTokens   []string
+	reconcileTokenPos map[string]int
+	reconcileCursor   int
+
+	artifactCleanupCh chan string
 }
 
 // NewConnectionBridge creates a new ConnectionBridge.
 func NewConnectionBridge(rdb redis.UniversalClient, sessionStore *SessionStore, queue MessageQueue) *ConnectionBridge {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ConnectionBridge{
-		workerID:          uuid.New().String()[:12],
-		rdb:               rdb,
-		sessionStore:      sessionStore,
-		queue:             queue,
-		ctx:               ctx,
-		cancel:            cancel,
-		heartbeatInterval: HeartbeatInterval,
-		cleanupInterval:   CleanupInterval,
-		cleanupLockTTL:    CleanupLockTTL,
+		workerID:               uuid.New().String()[:12],
+		rdb:                    rdb,
+		sessionStore:           sessionStore,
+		queue:                  queue,
+		ctx:                    ctx,
+		cancel:                 cancel,
+		heartbeatInterval:      HeartbeatInterval,
+		cleanupInterval:        CleanupInterval,
+		cleanupLockTTL:         CleanupLockTTL,
+		reconcileInterval:      ReconcileInterval,
+		reconcileBatchSize:     DefaultReconcileBatchSize,
+		workerInboxConsumers:   DefaultWorkerInboxConsumers,
+		artifactCleanupWorkers: DefaultArtifactCleanupWorkers,
+		reconcileTokenPos:      make(map[string]int),
+		artifactCleanupCh:      make(chan string, 2048),
 	}
 }
 
 // Start begins the heartbeat goroutine.
 func (b *ConnectionBridge) Start() {
-	b.wg.Add(2)
+	b.wg.Add(3 + b.workerInboxConsumers + b.artifactCleanupWorkers)
 	go b.runHeartbeat()
 	go b.runCleanup()
+	go b.runReconcile()
+	b.startWorkerInboxConsumers()
+	b.startArtifactCleanupWorkers()
 	log.Info().Str("worker", b.workerID).Msg("Bridge worker started")
 }
 
@@ -161,6 +188,24 @@ func (b *ConnectionBridge) runCleanup() {
 				return
 			}
 			b.doCleanup()
+		}
+	}
+}
+
+func (b *ConnectionBridge) runReconcile() {
+	defer b.wg.Done()
+	ticker := time.NewTicker(b.reconcileInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-ticker.C:
+			if b.shuttingDown.Load() {
+				return
+			}
+			b.doReconcile()
 		}
 	}
 }
@@ -218,8 +263,8 @@ func (b *ConnectionBridge) cleanupExpiredBots(ctx context.Context, now float64) 
 		return
 	}
 	for _, tok := range expired {
-		b.queue.DeleteQueue(ctx, BotInboxPrefix+tok)
-		b.cleanupChatInboxes(ctx, tok)
+		b.enqueueArtifactCleanup(tok)
+		b.rdb.Del(ctx, BotOwnerPrefix+tok)
 		b.rdb.Del(ctx, BotGenPrefix+tok)
 	}
 	b.rdb.ZRemRangeByScore(ctx, BotAliveKey, "-inf", fmt.Sprintf("%f", cutoff))
@@ -320,29 +365,14 @@ func (b *ConnectionBridge) RegisterBot(ctx context.Context, token string, conn *
 
 	// Update ZSET heartbeat
 	b.rdb.ZAdd(ctx, BotAliveKey, redis.Z{Score: float64(time.Now().Unix()), Member: token})
+	if err := b.SetBotOwner(ctx, token, b.workerID); err != nil {
+		return fmt.Errorf("set bot owner: %w", err)
+	}
 
 	// Store locally
 	b.bots.Store(token, conn)
 	b.botGens.Store(token, gen)
-
-	// Ensure consumer group and start poll (outside critical section logic but still under defer)
-	inbox := BotInboxPrefix + token
-	b.queue.EnsureGroup(ctx, inbox, "bot")
-
-	// Cancel old poll
-	taskKey := "bot:" + token
-	if cancelFn, loaded := b.pollCancels.LoadAndDelete(taskKey); loaded {
-		cancelFn.(context.CancelFunc)()
-	}
-
-	// Start new poll
-	pollCtx, pollCancel := context.WithCancel(b.ctx)
-	b.pollCancels.Store(taskKey, pollCancel)
-	b.wg.Add(1)
-	go func() {
-		defer b.wg.Done()
-		b.pollBotInbox(pollCtx, token, gen)
-	}()
+	b.trackReconcileToken(token)
 
 	log.Info().Str("worker", b.workerID).Int64("gen", gen).Str("token", pkg.SafePrefix(token, 10)).
 		Msg("Bot registered")
@@ -352,11 +382,7 @@ func (b *ConnectionBridge) RegisterBot(ctx context.Context, token string, conn *
 func (b *ConnectionBridge) evictLocal(token string) {
 	connI, loaded := b.bots.LoadAndDelete(token)
 	b.botGens.Delete(token)
-
-	taskKey := "bot:" + token
-	if cancelFn, ok := b.pollCancels.LoadAndDelete(taskKey); ok {
-		cancelFn.(context.CancelFunc)()
-	}
+	b.untrackReconcileToken(token)
 
 	if loaded && connI != nil {
 		conn := connI.(*BotConn)
@@ -385,10 +411,7 @@ func (b *ConnectionBridge) UnregisterBot(ctx context.Context, token string, conn
 	// Local cleanup
 	b.bots.Delete(token)
 	b.botGens.Delete(token)
-	taskKey := "bot:" + token
-	if cancelFn, ok := b.pollCancels.LoadAndDelete(taskKey); ok {
-		cancelFn.(context.CancelFunc)()
-	}
+	b.untrackReconcileToken(token)
 	b.NotifyBotDisconnected(token)
 	b.regMu.Unlock()
 
@@ -413,12 +436,13 @@ func (b *ConnectionBridge) RemoveBotSessions(ctx context.Context, token string) 
 		_ = conn.Close(model.ErrWSTokenDeleted.Code, model.ErrWSTokenDeleted.Message)
 		b.UnregisterBot(ctx, token, nil)
 	} else {
-		// Bot may be on remote worker — push disconnect command
-		inbox := BotInboxPrefix + token
-		b.queue.Publish(ctx, inbox, `{"_disconnect":true}`)
+		route, err := b.ResolveBotRoute(ctx, token)
+		if err == nil {
+			_ = b.PublishDisconnectToWorkerInbox(ctx, route.WorkerID, token)
+		}
 		b.rdb.ZRem(ctx, BotAliveKey, token)
-		b.queue.DeleteQueue(ctx, BotInboxPrefix+token)
-		b.cleanupChatInboxes(ctx, token)
+		b.enqueueArtifactCleanup(token)
+		b.rdb.Del(ctx, BotOwnerPrefix+token)
 		b.rdb.Del(ctx, BotGenPrefix+token)
 	}
 	log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Bot sessions fully removed")
@@ -481,9 +505,12 @@ func (b *ConnectionBridge) SendCancelToBot(ctx context.Context, token, sessionID
 		"method":  "session/cancel",
 		"params":  map[string]interface{}{"sessionId": sessionID},
 	}
-	inbox := BotInboxPrefix + token
-	data, _ := json.Marshal(map[string]interface{}{"rpc_request": rpcRequest})
-	if _, err := b.queue.Publish(ctx, inbox, string(data)); err != nil {
+	route, err := b.ResolveBotRoute(ctx, token)
+	if err != nil {
+		log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to resolve bot route for cancel")
+		return err
+	}
+	if err := b.PublishToWorkerInbox(ctx, route.WorkerID, token, rpcRequest); err != nil {
 		log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to send cancel to bot")
 		return err
 	}
@@ -527,9 +554,12 @@ func (b *ConnectionBridge) SendToBot(ctx context.Context, token, userMessage str
 		},
 	}
 
-	inbox := BotInboxPrefix + token
-	data, _ := json.Marshal(map[string]interface{}{"rpc_request": rpcRequest})
-	if _, err := b.queue.Publish(ctx, inbox, string(data)); err != nil {
+	route, err := b.ResolveBotRoute(ctx, token)
+	if err != nil {
+		log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to resolve bot route")
+		return "", err
+	}
+	if err := b.PublishToWorkerInbox(ctx, route.WorkerID, token, rpcRequest); err != nil {
 		log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to push to bot inbox")
 		return "", err
 	}
@@ -654,8 +684,8 @@ func (b *ConnectionBridge) shouldSkipSharedCleanup(ctx context.Context, token st
 
 func (b *ConnectionBridge) cleanupSharedBotState(ctx context.Context, token string, deleteGen bool) {
 	b.rdb.ZRem(ctx, BotAliveKey, token)
-	b.queue.DeleteQueue(ctx, BotInboxPrefix+token)
-	b.cleanupChatInboxes(ctx, token)
+	b.rdb.Del(ctx, BotOwnerPrefix+token)
+	b.enqueueArtifactCleanup(token)
 	if deleteGen {
 		b.rdb.Del(ctx, BotGenPrefix+token)
 	}
@@ -677,87 +707,6 @@ func (b *ConnectionBridge) sendToSession(ctx context.Context, token, sessionID s
 		if !b.shuttingDown.Load() {
 			log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Str("session", pkg.SafePrefix(sessionID, 8)).
 				Msg("Failed to send to session inbox")
-		}
-	}
-}
-
-func (b *ConnectionBridge) pollBotInbox(ctx context.Context, token string, gen int64) {
-	inbox := BotInboxPrefix + token
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		if b.shuttingDown.Load() {
-			return
-		}
-
-		result, err := b.queue.Consume(ctx, inbox, "bot", "bot", ConsumeBlockMs)
-		if err != nil {
-			if !b.shuttingDown.Load() {
-				log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Bot inbox consume error")
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(1 * time.Second):
-				}
-			}
-			continue
-		}
-
-		// Cross-worker eviction self-check
-		if gen > 0 {
-			remoteGenRaw, err := b.rdb.Get(ctx, BotGenPrefix+token).Result()
-			if err == nil {
-				remoteGen, err := strconv.ParseInt(remoteGenRaw, 10, 64)
-				if err == nil && remoteGen > gen {
-					log.Info().Int64("remote_gen", remoteGen).Int64("local_gen", gen).
-						Str("token", pkg.SafePrefix(token, 10)).Msg("Poll task evicted")
-					b.evictLocal(token)
-					return
-				}
-			}
-		}
-
-		if result == nil {
-			continue
-		}
-
-		b.queue.Ack(ctx, inbox, "bot", result.ID)
-
-		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(result.Data), &data); err != nil {
-			continue
-		}
-
-		// Handle disconnect command
-		if disc, _ := data["_disconnect"].(bool); disc {
-			if connI, loaded := b.bots.LoadAndDelete(token); loaded {
-				conn := connI.(*BotConn)
-				_ = conn.Close(model.ErrWSTokenDeleted.Code, model.ErrWSTokenDeleted.Message)
-			}
-			b.botGens.Delete(token)
-			b.pollCancels.Delete("bot:" + token)
-			b.NotifyBotDisconnected(token)
-			log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Inbox: received disconnect for bot")
-			return
-		}
-
-		// Forward RPC to local WS
-		if connI, ok := b.bots.Load(token); ok {
-			conn := connI.(*BotConn)
-			if rpcReq, ok := data["rpc_request"]; ok {
-				if err := conn.WriteJSON(rpcReq); err != nil {
-					log.Warn().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to forward to bot WS")
-				} else {
-					log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Inbox: forwarded to local bot")
-				}
-			}
-		} else {
-			log.Warn().Str("token", pkg.SafePrefix(token, 10)).Msg("Inbox: bot WS gone, message dropped")
 		}
 	}
 }
@@ -786,12 +735,6 @@ func (b *ConnectionBridge) Shutdown() {
 		if !b.shouldSkipSharedCleanup(ctx, token, localGen, "shutdown") {
 			b.cleanupSharedBotState(ctx, token, true)
 		}
-		return true
-	})
-
-	// Cancel all poll tasks
-	b.pollCancels.Range(func(key, value interface{}) bool {
-		value.(context.CancelFunc)()
 		return true
 	})
 

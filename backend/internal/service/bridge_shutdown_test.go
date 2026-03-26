@@ -256,6 +256,77 @@ func TestHeartbeatRefreshDoesNotBlockOnGenerationReads(t *testing.T) {
 	}
 }
 
+func TestUnregisterBotDoesNotBlockOnArtifactCleanup(t *testing.T) {
+	rdb := newLocalRedisForBridgeTest(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	token := "sk-cleanup-" + uuid.NewString()[:8]
+	inboxKey := ChatInboxPrefix + token + ":session-1"
+	cleanupBridgeTestKeys(t, ctx, rdb, token)
+
+	wrapped := &blockingSMembersRedis{
+		UniversalClient: rdb,
+		blockPrefix:     ChatInboxIdxPrefix,
+		releaseCh:       make(chan struct{}),
+		notifyCh:        make(chan struct{}, 1),
+	}
+
+	bridge := NewConnectionBridge(wrapped, nil, noopQueue{})
+	bridge.workerInboxConsumers = 0
+	bridge.artifactCleanupWorkers = 1
+	bridge.heartbeatInterval = time.Hour
+	bridge.cleanupInterval = time.Hour
+	bridge.reconcileInterval = time.Hour
+	defer func() {
+		wrapped.release()
+		bridge.Shutdown()
+		cleanupBridgeTestKeys(t, context.Background(), rdb, token)
+	}()
+
+	bot, client := newTestBotConn(t)
+	defer client.Close()
+	if err := bridge.RegisterBot(ctx, token, bot); err != nil {
+		t.Fatalf("RegisterBot: %v", err)
+	}
+	if err := rdb.SAdd(ctx, ChatInboxIdxPrefix+token, inboxKey).Err(); err != nil {
+		t.Fatalf("SAdd chat inbox index: %v", err)
+	}
+	if err := rdb.Set(ctx, inboxKey, "payload", time.Minute).Err(); err != nil {
+		t.Fatalf("Set chat inbox: %v", err)
+	}
+
+	bridge.Start()
+
+	start := time.Now()
+	bridge.UnregisterBot(ctx, token, bot)
+	elapsed := time.Since(start)
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("expected UnregisterBot to return quickly, took %v", elapsed)
+	}
+
+	select {
+	case <-wrapped.notifyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected async artifact cleanup to start")
+	}
+
+	wrapped.release()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		exists, err := rdb.Exists(ctx, ChatInboxIdxPrefix+token).Result()
+		if err != nil {
+			t.Fatalf("Exists chat inbox index: %v", err)
+		}
+		if exists == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("expected async cleanup to remove chat inbox artifacts")
+}
+
 func newLocalRedisForBridgeTest(t *testing.T) redis.UniversalClient {
 	t.Helper()
 
@@ -304,6 +375,7 @@ func cleanupBridgeTestKeys(t *testing.T, ctx context.Context, rdb redis.Universa
 	mustBridgeRedisDel(t, ctx, rdb, BotAliveKey)
 	mustBridgeRedisDel(t, ctx, rdb, CleanupLockKey)
 	mustBridgeRedisDel(t, ctx, rdb, BotGenPrefix+token)
+	mustBridgeRedisDel(t, ctx, rdb, BotOwnerPrefix+token)
 	mustBridgeRedisDel(t, ctx, rdb, BotInboxPrefix+token)
 }
 
@@ -500,4 +572,33 @@ func (c *blockingGetRedis) Get(ctx context.Context, key string) *redis.StringCmd
 		}
 	}
 	return c.UniversalClient.Get(ctx, key)
+}
+
+type blockingSMembersRedis struct {
+	redis.UniversalClient
+	blockPrefix string
+	releaseCh   chan struct{}
+	notifyCh    chan struct{}
+	releaseOnce sync.Once
+}
+
+func (c *blockingSMembersRedis) SMembers(ctx context.Context, key string) *redis.StringSliceCmd {
+	if strings.HasPrefix(key, c.blockPrefix) {
+		select {
+		case c.notifyCh <- struct{}{}:
+		default:
+		}
+		select {
+		case <-ctx.Done():
+			return redis.NewStringSliceResult(nil, ctx.Err())
+		case <-c.releaseCh:
+		}
+	}
+	return c.UniversalClient.SMembers(ctx, key)
+}
+
+func (c *blockingSMembersRedis) release() {
+	c.releaseOnce.Do(func() {
+		close(c.releaseCh)
+	})
 }
