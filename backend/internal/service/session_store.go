@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -15,7 +14,7 @@ import (
 )
 
 const (
-	sessionsPrefix = "bridge:sessions:"
+	sessionsPrefix  = "bridge:sessions:"
 	sessionCacheTTL = 3600 * time.Second // 1 hour
 )
 
@@ -87,17 +86,13 @@ func (s *SessionStore) GetSessions(ctx context.Context, token string) ([]Session
 	cached, err := s.rdb.LRange(ctx, sessionsKey, 0, -1).Result()
 	if err == nil && len(cached) > 0 {
 		sessions := make([]SessionInfo, 0, len(cached))
-		for _, raw := range cached {
-			var info SessionInfo
-			if err := json.Unmarshal([]byte(raw), &info); err != nil {
-				// Cache is corrupted, fall through to DB
-				break
-			}
-			sessions = append(sessions, info)
+		for i, sessionID := range cached {
+			sessions = append(sessions, SessionInfo{
+				ID:     sessionID,
+				Number: i + 1,
+			})
 		}
-		if len(sessions) == len(cached) {
-			return sessions, nil
-		}
+		return sessions, nil
 	}
 
 	// Cache miss — query MySQL
@@ -169,8 +164,7 @@ func (s *SessionStore) repopulateCache(ctx context.Context, token string, rows [
 	if len(rows) > 0 {
 		sids := make([]interface{}, len(rows))
 		for i, r := range rows {
-			j, _ := json.Marshal(SessionInfo{ID: r.SessionID, Number: r.SessionNumber})
-			sids[i] = string(j)
+			sids[i] = r.SessionID
 		}
 		pipe.RPush(ctx, sessionsKey, sids...)
 		pipe.Expire(ctx, sessionsKey, sessionCacheTTL)
