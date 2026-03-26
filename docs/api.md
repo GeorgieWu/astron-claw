@@ -262,8 +262,8 @@ POST /api/admin/auth/setup
 **失败响应：**
 
 ```json
-{"code": 400, "error": "Password already set"}
-{"code": 400, "error": "Password too short"}
+{"code": 10101, "error": "Password already set"}
+{"code": 10102, "error": "Password too short"}
 ```
 
 **测试代码：**
@@ -324,7 +324,7 @@ POST /api/admin/auth/login
 **失败响应：**
 
 ```json
-{"code": 401, "error": "Wrong password"}
+{"code": 10005, "error": "Wrong password"}
 ```
 
 **测试代码：**
@@ -575,7 +575,7 @@ PATCH /api/admin/tokens/{token_value}
 **失败响应：**
 
 ```json
-{"code": 404, "error": "Token not found"}
+{"code": 10501, "error": "Token not found"}
 ```
 
 **测试代码：**
@@ -741,9 +741,9 @@ POST /bridge/chat
 | `500` | 发送到 Bot 失败 |
 
 ```json
-{"code": 400, "error": "Empty message"}
-{"code": 400, "error": "No bot connected"}
-{"code": 401, "error": "Invalid or missing token"}
+{"code": 10201, "error": "Empty message"}
+{"code": 10202, "error": "No bot connected"}
+{"code": 10001, "error": "Invalid or missing token"}
 ```
 
 ---
@@ -1492,34 +1492,43 @@ print(data["status"])  # "ok" or "degraded"
 **错误响应：**
 
 ```json
-{"code": 400, "error": "Password already set"}
+{"code": 10101, "error": "Password already set"}
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `code` | integer | `0` 表示成功，`> 0` 表示失败（值为 HTTP 状态码） |
+| `code` | integer | `0` 表示成功，`10000+` 表示失败（应用错误码） |
 | `error` | string | 仅失败时存在，人类可读的错误描述（可含动态详情，如 `"Session not found: <id>"`) |
 
 ### 错误码清单
 
-| code | HTTP 状态码 | 消息 | 使用场景 |
-|------|-----------|------|---------|
-| `401` | 401 | Invalid or missing token | Token 无效或缺失 |
-| `401` | 401 | Missing authorization | 缺少 Authorization Header |
-| `401` | 401 | Invalid admin session | Admin Session 无效或过期 |
-| `401` | 401 | Unauthorized | Admin 未认证 |
-| `401` | 401 | Wrong password | 管理员登录密码错误 |
-| `400` | 400 | Password already set | 重复设置密码 |
-| `400` | 400 | Password too short | 密码少于 4 个字符 |
-| `400` | 400 | Empty message | 消息内容和媒体均为空 |
-| `400` | 400 | No bot connected | Token 对应的 Bot 未在线 |
-| `500` | 500 | Failed to send message to bot | 消息推送到 Bot 失败 |
-| `413` | 413 | File too large | 文件超过大小限制 |
-| `400` | 400 | Invalid file or unsupported type | 无效文件或不支持的类型 |
-| `400` | 400 | Invalid media URL scheme | 媒体 URL 非 http/https |
-| `400` | 400 | Unsupported media type | 不支持的媒体类型 |
-| `404` | 404 | Session not found | 指定的会话不存在 |
-| `404` | 404 | Token not found | 指定的 Token 不存在 |
+| 应用错误码 | HTTP 状态码 | 消息 | 使用场景 |
+|-----------|-----------|------|---------|
+| `10001` | 401 | Invalid or missing token | Token 无效或缺失 |
+| `10002` | 401 | Missing authorization | 缺少 Authorization Header |
+| `10003` | 401 | Invalid admin session | Admin Session 无效或过期 |
+| `10004` | 401 | Unauthorized | Admin 未认证 |
+| `10005` | 401 | Wrong password | 管理员登录密码错误 |
+| `10101` | 400 | Password already set | 重复设置密码 |
+| `10102` | 400 | Password too short | 密码少于 4 个字符 |
+| `10201` | 400 | Empty message | 消息内容和媒体均为空 |
+| `10202` | 400 | No bot connected | Token 对应的 Bot 未在线 |
+| `10203` | 400 | Invalid request | 请求格式错误 |
+| `10204` | 500 | Failed to send message to bot | 消息推送到 Bot 失败 |
+| `10205` | — | Stream timeout | SSE 流超时（仅 SSE 事件） |
+| `10206` | — | Internal server error | 内部错误（仅 SSE 事件） |
+| `10301` | 413 | File too large | 文件超过大小限制 |
+| `10302` | 400 | Invalid file or unsupported type | 无效文件或不支持的类型 |
+| `10303` | 400 | Invalid media URL scheme | 媒体 URL 非 http/https |
+| `10304` | 400 | Unsupported media type | 不支持的媒体类型 |
+| `10305` | 400 | Too many media items (max 10) | 媒体项超过 10 个 |
+| `10401` | 404 | Session not found | 指定的会话不存在 |
+| `10501` | 404 | Token not found | 指定的 Token 不存在 |
+| `10601` | — | Invalid or missing bot token | Bot Token 无效（WebSocket 关闭码 4001） |
+| `10602` | — | Token deleted | Token 被删除（WebSocket 关闭码 4003） |
+| `10603` | — | Server restarting | 服务重启（WebSocket 关闭码 4000） |
+| `10604` | — | Evicted by newer connection | 被新连接驱逐（WebSocket 关闭码 4005） |
+| `10701` | — | Unknown error from bot | Bot 返回未知错误 |
 
 ### HTTP 状态码
 
@@ -1533,22 +1542,23 @@ print(data["status"])  # "ok" or "degraded"
 
 ### WebSocket 关闭码
 
-| 关闭码 | 说明 |
-|--------|------|
-| `1012` | 服务重启（uvicorn 标准关闭码，等同 `4000`） |
-| `4000` | 服务重启（自定义关闭码，graceful shutdown 时发送） |
-| `4001` | Token 无效或已过期 |
-| `4002` | 该 Token 已有 Bot 在线（仅 `/bridge/bot`） |
-| `4003` | Token 被管理员删除（仅 `/bridge/bot`） |
+Bot WebSocket 连接使用以下关闭码：
+
+| 关闭码 | 应用错误码 | 说明 |
+|--------|-----------|------|
+| `4000` | 10603 | 服务重启（graceful shutdown 时发送） |
+| `4001` | 10601 | Token 无效或已过期 |
+| `4003` | 10602 | Token 被管理员删除 |
+| `4005` | 10604 | 被新连接驱逐（同一 Token 有新 Bot 连接） |
 
 **客户端重连建议：**
 
 | 关闭码 | 推荐行为 |
 |--------|---------|
-| `4000` / `1012` | 重置重试计数器，立即快速重连 |
+| `4000` | 重置重试计数器，立即快速重连 |
 | `4001` | 停止重试，返回登录/Token 输入页 |
-| `4002` | 停止重试，提示用户已有 Bot 在线 |
 | `4003` | 停止重试，提示 Token 已被删除 |
+| `4005` | 停止重试，提示已有新连接 |
 | 其他 | 指数退避重连 |
 
 ---
@@ -1632,11 +1642,11 @@ bridge_chat_active_streams{service="astron-claw",token_prefix="sk-a1b2c3..."} 3
 | status | code | 说明 |
 |--------|------|------|
 | `success` | `200` | 请求成功，进入 SSE 流 |
-| `auth_fail` | `401` | Token 无效或缺失 |
-| `bad_request` | `400` | 参数错误（空消息、无效媒体等） |
-| `no_bot` | `400` | Bot 未连接 |
-| `session_not_found` | `404` | 指定会话不存在 |
-| `send_fail` | `500` | 发送到 Bot 失败 |
+| `auth_fail` | `10001` | Token 无效或缺失 |
+| `bad_request` | `10201` | 参数错误（空消息、无效媒体等） |
+| `no_bot` | `10202` | Bot 未连接 |
+| `session_not_found` | `10401` | 指定会话不存在 |
+| `send_fail` | `10204` | 发送到 Bot 失败 |
 
 **close_reason label 取值：**
 
