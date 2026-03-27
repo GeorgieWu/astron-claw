@@ -2,7 +2,6 @@ package infra
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -38,9 +37,20 @@ end
 `)
 
 func RunMigrations(ctx context.Context, cfg config.MysqlConfig, rdb redis.UniversalClient) error {
+	privileges, err := detectDDLPrivileges(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("detect ddl privileges: %w", err)
+	}
+	if !privileges.CanManageSchema {
+		log.Warn().
+			Str("database", cfg.Database).
+			Msg("MySQL user lacks database DDL privileges, skipping migrations")
+		return nil
+	}
+
 	// Open a dedicated connection with multiStatements=true for migrations
 	dsn := cfg.DSN() + "&multiStatements=true"
-	sqlDB, err := sql.Open("mysql", dsn)
+	sqlDB, err := sqlOpen("mysql", dsn)
 	if err != nil {
 		return fmt.Errorf("open migration db: %w", err)
 	}
