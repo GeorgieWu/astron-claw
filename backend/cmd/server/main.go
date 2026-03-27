@@ -25,9 +25,10 @@ func main() {
 
 	cfg := config.Load()
 	infra.SetupLogger(cfg.Server.LogLevel)
+	ctx := context.Background()
 
 	// Initialize MySQL
-	db, err := infra.InitDB(cfg.MySQL, cfg.DBPool)
+	db, err := infra.InitDB(ctx, cfg.MySQL, cfg.DBPool)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialise MySQL")
 	}
@@ -45,7 +46,6 @@ func main() {
 	telemetry.EnsureInstruments()
 
 	// Run database migrations
-	ctx := context.Background()
 	if err := infra.RunMigrations(ctx, cfg.MySQL, rdb); err != nil {
 		log.Fatal().Err(err).Msg("Failed to run database migrations")
 	}

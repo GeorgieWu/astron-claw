@@ -7,8 +7,23 @@ import type { ChannelRuntimeState, SessionContext } from "./types.js";
 // ---------------------------------------------------------------------------
 let _logger: any = console;
 
+function isLoggerLike(candidate: any): boolean {
+  if (!candidate || typeof candidate !== "object") return false;
+  return typeof candidate.info === "function"
+    && typeof candidate.warn === "function"
+    && typeof candidate.error === "function";
+}
+
 export function setLogger(l: any): void {
-  _logger = l ?? console;
+  _logger = isLoggerLike(l) ? l : console;
+}
+
+export function resolveLogger(api: any): any {
+  const runtimeLogger = api?.runtime?.logging?.getChildLogger?.({ pluginId: PLUGIN_ID });
+  if (isLoggerLike(runtimeLogger)) return runtimeLogger;
+  if (isLoggerLike(api?.logger)) return api.logger;
+  if (isLoggerLike(api?.runtime?.logger)) return api.runtime.logger;
+  return console;
 }
 
 export function getRawLogger(): any {
