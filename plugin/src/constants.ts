@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "astron-claw";
-export const PLUGIN_VERSION = "0.1.0";
+export const PLUGIN_VERSION = "0.1.1";
 export const DEFAULT_ACCOUNT_ID = "default";
 
 export const DEFAULT_BRIDGE_URL = "ws://localhost:8765/bridge/bot";
