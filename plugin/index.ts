@@ -1,5 +1,5 @@
 import { PLUGIN_ID, PLUGIN_VERSION } from "./src/constants.js";
-import { setRuntime, setLogger, logger } from "./src/runtime.js";
+import { setRuntime, setLogger, resolveLogger, logger } from "./src/runtime.js";
 import { astronClawPlugin } from "./src/channel.js";
 import { registerToolHooks } from "./src/hooks.js";
 
@@ -12,7 +12,7 @@ const plugin = {
   register(api: any) {
     // Save runtime reference (like DingTalk's setDingTalkRuntime)
     setRuntime(api.runtime);
-    setLogger(api.runtime?.logger ?? api.logger);
+    setLogger(resolveLogger(api));
 
     // Register as a Channel (not a Service)
     api.registerChannel({ plugin: astronClawPlugin });
