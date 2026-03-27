@@ -22,6 +22,8 @@ import (
 type S3Storage struct {
 	cfg    config.StorageConfig
 	client *s3.Client
+	// httpClient is a test seam for exercising HTTPS upload behavior against local servers.
+	httpClient aws.HTTPClient
 }
 
 func NewS3Storage(cfg config.StorageConfig) *S3Storage {
@@ -44,6 +46,7 @@ func (s *S3Storage) Start() error {
 			credentials.NewStaticCredentialsProvider(s.cfg.AccessKey, s.cfg.SecretKey, ""),
 		),
 		awsconfig.WithEndpointResolverWithOptions(resolver),
+		awsconfig.WithHTTPClient(s.httpClient),
 	)
 	if err != nil {
 		return fmt.Errorf("load aws config: %w", err)
@@ -51,6 +54,8 @@ func (s *S3Storage) Start() error {
 
 	s.client = s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		o.UsePathStyle = true
+		// OSS-compatible endpoints reject the SDK's default HTTPS trailer checksum uploads.
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 	})
 
 	log.Info().Str("endpoint", s.cfg.Endpoint).Msg("S3 client initialised")
