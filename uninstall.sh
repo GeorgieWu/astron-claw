@@ -134,10 +134,10 @@ if [ "$HAS_OPENCLAW" = "1" ]; then
 
   if [ "$KEEP_CONFIG" != "1" ]; then
     log "removing channel config"
-    # Remove plugin entry config (current path)
-    "$OPENCLAW_BIN" config set "plugins.entries.$PLUGIN_NAME" --json "null" </dev/null >/dev/null 2>&1 || true
-    # Also clean up legacy channels path if present
+    # Remove channel config (canonical location)
     "$OPENCLAW_BIN" config set "channels.$PLUGIN_NAME" --json "null" </dev/null >/dev/null 2>&1 || true
+    # Also clean up legacy plugins.entries path if present
+    "$OPENCLAW_BIN" config set "plugins.entries.$PLUGIN_NAME" --json "null" </dev/null >/dev/null 2>&1 || true
     # Remove plugin from plugins.allow trust list
     if command -v node >/dev/null 2>&1; then
       log "removing plugin from plugins.allow trust list"
