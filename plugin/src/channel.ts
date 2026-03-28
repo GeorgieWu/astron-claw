@@ -36,9 +36,8 @@ export const astronClawPlugin = {
   // --- Config (account discovery — required by framework) ---
   config: {
     listAccountIds: (cfg: any) => {
-      const pluginCfg = cfg?.channels?.[PLUGIN_ID]
-        ?? cfg?.plugins?.entries?.[PLUGIN_ID]?.config
-        ?? {};
+      // Only read from channels.astron-claw (canonical location)
+      const pluginCfg = cfg?.channels?.[PLUGIN_ID] ?? {};
       // Return account if bridge URL is configured (token checked by isConfigured)
       if (pluginCfg.bridge?.url || pluginCfg.bridge?.token) {
         return [DEFAULT_ACCOUNT_ID];

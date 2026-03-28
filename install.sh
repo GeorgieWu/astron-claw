@@ -292,48 +292,76 @@ log "restarting OpenClaw gateway to register channel"
 sleep 3
 
 # ---------------------------------------------------------------------------
-# Write channel configuration
-# Config is stored under plugins.entries.<id>.config rather than
-# channels.<id> because OpenClaw validates channels.* against known
-# channel IDs before loading plugins.  The plugin reads config from
-# plugins.entries path at runtime.
+# Migrate legacy config and write channel configuration
+# After plugin registration, OpenClaw creates channels.* namespace.
+# We migrate any legacy plugins.entries.astron-claw.config to the
+# canonical channels.astron-claw location and remove the legacy entry.
 # ---------------------------------------------------------------------------
 log "configuring channel (name=$ACCOUNT_NAME, server=$SERVER_URL)"
 
-CONFIG_JSON=$(node -e "
-  const cfg = {
-    enabled: true,
-    name: $(printf '%s' "$ACCOUNT_NAME" | node -e "process.stdout.write(JSON.stringify(require('fs').readFileSync('/dev/stdin','utf8')))"),
-    bridge: {
-      url: $(printf '%s' "$SERVER_URL" | node -e "process.stdout.write(JSON.stringify(require('fs').readFileSync('/dev/stdin','utf8')))"),
-      token: $(printf '%s' "$BOT_TOKEN" | node -e "process.stdout.write(JSON.stringify(require('fs').readFileSync('/dev/stdin','utf8')))")
-    },
-    allowFrom: ['*']
-  };
-  process.stdout.write(JSON.stringify(cfg));
-")
+OPENCLAW_CONFIG_PATH="$OPENCLAW_CONFIG_PATH" \
+PLUGIN_NAME="$PLUGIN_NAME" \
+ACCOUNT_NAME="$ACCOUNT_NAME" \
+SERVER_URL="$SERVER_URL" \
+BOT_TOKEN="$BOT_TOKEN" \
+node -e "
+const fs = require('fs');
+const cfgPath = process.env.OPENCLAW_CONFIG_PATH;
+const pluginName = process.env.PLUGIN_NAME;
+const accountName = process.env.ACCOUNT_NAME;
+const serverUrl = process.env.SERVER_URL;
+const botToken = process.env.BOT_TOKEN;
 
-ENTRY_JSON=$(node -e "
-  const entry = { enabled: true, config: ${CONFIG_JSON} };
-  process.stdout.write(JSON.stringify(entry));
-")
+// Read current config
+const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
 
-if ! "$OPENCLAW_BIN" config set "plugins.entries.$PLUGIN_NAME" --json "$ENTRY_JSON" </dev/null 2>/dev/null; then
-  # Fallback: write config directly to the JSON file if CLI fails
-  log "config via CLI failed, writing directly to config file"
-  OPENCLAW_CONFIG_PATH="$OPENCLAW_CONFIG_PATH" PLUGIN_NAME="$PLUGIN_NAME" ENTRY_JSON="$ENTRY_JSON" node -e "
-    const fs = require('fs');
-    const cfgPath = process.env.OPENCLAW_CONFIG_PATH;
-    const pluginName = process.env.PLUGIN_NAME;
-    const entryJson = process.env.ENTRY_JSON;
-    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-    if (!cfg.plugins) cfg.plugins = {};
-    if (!cfg.plugins.entries) cfg.plugins.entries = {};
-    cfg.plugins.entries[pluginName] = JSON.parse(entryJson);
-    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
-  " </dev/null
+// Read legacy config if it exists
+const legacyCfg = cfg?.plugins?.entries?.[pluginName]?.config ?? {};
+
+// Build final channel config by merging:
+// 1. Installation parameters (highest priority)
+// 2. Legacy config optional fields (if not overridden)
+const channelCfg = {
+  enabled: true,
+  name: accountName,
+  bridge: {
+    url: serverUrl,
+    token: botToken
+  },
+  allowFrom: legacyCfg.allowFrom ?? ['*']
+};
+
+// Preserve optional fields from legacy config
+if (legacyCfg.retry) {
+  channelCfg.retry = legacyCfg.retry;
+}
+if (legacyCfg.media) {
+  channelCfg.media = legacyCfg.media;
+}
+
+// Write to channels.astron-claw
+if (!cfg.channels) cfg.channels = {};
+cfg.channels[pluginName] = channelCfg;
+
+// Clean up legacy config from plugins.entries.astron-claw.config
+if (cfg.plugins?.entries?.[pluginName]?.config) {
+  delete cfg.plugins.entries[pluginName].config;
+  // Keep plugins.entries.astron-claw.enabled for plugin registration
+  if (Object.keys(cfg.plugins.entries[pluginName]).length === 0) {
+    cfg.plugins.entries[pluginName] = { enabled: true };
+  }
+}
+
+// Write back to file
+fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+" </dev/null
+
+if [ $? -ne 0 ]; then
+  log_error "failed to write channel configuration"
+  exit 1
 fi
-log "channel config updated"
+
+log "channel config written to channels.$PLUGIN_NAME"
 
 # ---------------------------------------------------------------------------
 # Register plugin in the trust allow-list so OpenClaw does not warn about
