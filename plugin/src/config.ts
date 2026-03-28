@@ -26,9 +26,8 @@ function readNum(v: unknown): number | undefined {
 // Account resolution
 // ---------------------------------------------------------------------------
 export function resolveAstronClawAccountFromCfg(cfg: any): ResolvedAccount {
-  const pluginCfg = cfg?.channels?.[PLUGIN_ID]
-    ?? cfg?.plugins?.entries?.[PLUGIN_ID]?.config
-    ?? {};
+  // Only read from channels.astron-claw (canonical location)
+  const pluginCfg = cfg?.channels?.[PLUGIN_ID] ?? {};
 
   const bridge = pluginCfg.bridge ?? {};
   const retry = pluginCfg.retry ?? {};
