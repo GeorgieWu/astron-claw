@@ -184,6 +184,13 @@ func (app *App) chatSSE(c *gin.Context) {
 	closeReason := "done"
 	telemetry.ChatActiveStreams.Add(ctx, 1)
 
+	// 注册SSE连接到bot状态监控器
+	var sseConn *service.SSEConnection
+	if app.BotStatusMonitor != nil {
+		sseConn = app.BotStatusMonitor.RegisterSSEConnection(tokenStr, sessionID, inbox)
+		defer app.BotStatusMonitor.UnregisterSSEConnection(inbox)
+	}
+
 	defer func() {
 		telemetry.ChatActiveStreams.Add(context.Background(), -1)
 		streamDuration := time.Since(streamStart).Seconds()
@@ -211,13 +218,32 @@ func (app *App) chatSSE(c *gin.Context) {
 	lastHeartbeat := time.Now()
 	hasChunks := false
 
+	// 准备 bot 断开监听 channel
+	var botDisconnectC <-chan struct{}
+	if sseConn != nil {
+		botDisconnectC = sseConn.DisconnectC
+	} else {
+		// 创建一个永远不会触发的 channel
+		neverC := make(chan struct{})
+		botDisconnectC = neverC
+	}
+
 	for {
-		// Check client disconnect
+		// Check client disconnect and bot disconnect
 		select {
 		case <-c.Request.Context().Done():
 			closeReason = "client_disconnect"
 			log.Info().Str("token", tp).Msg("SSE: client disconnected")
 			go app.Bridge.SendCancelToBot(context.Background(), tokenStr, sessionID)
+			return
+		case <-botDisconnectC:
+			closeReason = "bot_disconnect"
+			log.Info().Str("token", tp).Msg("SSE: bot disconnected")
+			errEvent := pkg.FormatSSEEvent("error", map[string]interface{}{
+				"content": model.ErrChatNoBot.Message,
+			})
+			_, _ = c.Writer.WriteString(errEvent)
+			flusher.Flush()
 			return
 		default:
 		}

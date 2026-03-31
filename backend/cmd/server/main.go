@@ -75,17 +75,22 @@ func main() {
 	bridge := service.NewConnectionBridge(rdb, sessionStore, queue)
 	bridge.Start()
 
+	// Initialize bot status monitor
+	botStatusMonitor := service.NewBotStatusMonitor(rdb)
+	botStatusMonitor.Start()
+
 	// Build the app and router
 	app := &router.App{
-		DB:        db,
-		RDB:       rdb,
-		TokenMgr:  tokenMgr,
-		AdminAuth: adminAuth,
-		MediaMgr:  mediaMgr,
-		Bridge:    bridge,
-		Queue:     queue,
-		Storage:   store,
-		Config:    cfg,
+		DB:               db,
+		RDB:              rdb,
+		TokenMgr:         tokenMgr,
+		AdminAuth:        adminAuth,
+		MediaMgr:         mediaMgr,
+		Bridge:           bridge,
+		Queue:            queue,
+		Storage:          store,
+		Config:           cfg,
+		BotStatusMonitor: botStatusMonitor,
 	}
 	r := router.SetupRouter(app)
 
@@ -123,6 +128,7 @@ func main() {
 	}
 
 	bridge.Shutdown()
+	botStatusMonitor.Stop()
 	telemetry.Shutdown()
 
 	if err := store.Close(); err != nil {

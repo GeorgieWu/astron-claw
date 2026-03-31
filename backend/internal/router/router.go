@@ -15,15 +15,16 @@ import (
 
 // App holds all application dependencies.
 type App struct {
-	DB        *gorm.DB
-	RDB       redis.UniversalClient
-	TokenMgr  *service.TokenManager
-	AdminAuth *service.AdminAuth
-	MediaMgr  *service.MediaManager
-	Bridge    *service.ConnectionBridge
-	Queue     service.MessageQueue
-	Storage   storage.ObjectStorage
-	Config    *config.AppConfig
+	DB               *gorm.DB
+	RDB              redis.UniversalClient
+	TokenMgr         *service.TokenManager
+	AdminAuth        *service.AdminAuth
+	MediaMgr         *service.MediaManager
+	Bridge           *service.ConnectionBridge
+	Queue            service.MessageQueue
+	Storage          storage.ObjectStorage
+	Config           *config.AppConfig
+	BotStatusMonitor *service.BotStatusMonitor
 }
 
 // SetupRouter configures all routes and middleware.
