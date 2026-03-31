@@ -139,8 +139,8 @@ func (app *App) chatSSE(c *gin.Context) {
 		if err != nil {
 			log.Error().Err(err).Str("token", tp).Msg("SSE: failed to create session")
 			reqStatus = "error"
-			reqCode = 500
-			c.JSON(500, gin.H{"code": 500, "error": "Failed to create session"})
+			reqCode = model.ErrSessionCreateFailed.Code
+			model.ErrorResponse(c, model.ErrSessionCreateFailed)
 			return
 		}
 	}
@@ -168,7 +168,7 @@ func (app *App) chatSSE(c *gin.Context) {
 
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
-		c.JSON(500, gin.H{"code": 500, "error": "Streaming not supported"})
+		model.ErrorResponse(c, model.ErrChatStreamUnsupported)
 		return
 	}
 
@@ -223,9 +223,8 @@ func (app *App) chatSSE(c *gin.Context) {
 	if sseConn != nil {
 		botDisconnectC = sseConn.DisconnectC
 	} else {
-		// 创建一个永远不会触发的 channel
-		neverC := make(chan struct{})
-		botDisconnectC = neverC
+		// 创建一个永远不会触发的 channel（nil channel 在 select 中会被忽略）
+		botDisconnectC = nil
 	}
 
 	for {
@@ -272,11 +271,20 @@ func (app *App) chatSSE(c *gin.Context) {
 		}
 
 		if result == nil {
-			// Check client disconnect
+			// Check client disconnect and bot disconnect
 			select {
 			case <-c.Request.Context().Done():
 				closeReason = "client_disconnect"
 				go app.Bridge.SendCancelToBot(context.Background(), tokenStr, sessionID)
+				return
+			case <-botDisconnectC:
+				closeReason = "bot_disconnect"
+				log.Info().Str("token", tp).Msg("SSE: bot disconnected")
+				errEvent := pkg.FormatSSEEvent("error", map[string]interface{}{
+					"content": model.ErrChatNoBot.Message,
+				})
+				_, _ = c.Writer.WriteString(errEvent)
+				flusher.Flush()
 				return
 			default:
 			}
@@ -351,7 +359,7 @@ func (app *App) listSessions(c *gin.Context) {
 	sessions, err := app.Bridge.GetSessions(c.Request.Context(), tokenStr)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to list sessions")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		model.ErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
 
@@ -373,14 +381,14 @@ func (app *App) createSession(c *gin.Context) {
 	sessionID, sessionNumber, err := app.Bridge.CreateSession(ctx, tokenStr)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create session")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		model.ErrorResponse(c, model.ErrSessionCreateFailed)
 		return
 	}
 
 	sessions, err := app.Bridge.GetSessions(ctx, tokenStr)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to list sessions")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		model.ErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
 

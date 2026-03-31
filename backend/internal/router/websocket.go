@@ -31,7 +31,7 @@ func (app *App) wsBot(c *gin.Context) {
 			log.Error().Err(err).Msg("WS upgrade failed for invalid token")
 			return
 		}
-		msg := websocket.FormatCloseMessage(model.ErrWSInvalidToken.Code, model.ErrWSInvalidToken.Message)
+		msg := websocket.FormatCloseMessage(model.ErrWSInvalidToken.HTTPStatus, model.ErrWSInvalidToken.Message)
 		_ = conn.WriteMessage(websocket.CloseMessage, msg)
 		conn.Close()
 		tp := pkg.SafePrefix(botToken, 10)

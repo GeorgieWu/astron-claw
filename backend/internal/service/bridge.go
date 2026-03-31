@@ -386,7 +386,7 @@ func (b *ConnectionBridge) evictLocal(token string) {
 
 	if loaded && connI != nil {
 		conn := connI.(*BotConn)
-		_ = conn.Close(model.ErrWSEvicted.Code, model.ErrWSEvicted.Message)
+		_ = conn.Close(model.ErrWSEvicted.HTTPStatus, model.ErrWSEvicted.Message)
 	}
 	b.NotifyBotDisconnected(token)
 	log.Info().Str("worker", b.workerID).Str("token", pkg.SafePrefix(token, 10)).Msg("Evicted local bot")
@@ -433,7 +433,7 @@ func (b *ConnectionBridge) RemoveBotSessions(ctx context.Context, token string) 
 
 	if connI, loaded := b.bots.Load(token); loaded {
 		conn := connI.(*BotConn)
-		_ = conn.Close(model.ErrWSTokenDeleted.Code, model.ErrWSTokenDeleted.Message)
+		_ = conn.Close(model.ErrWSTokenDeleted.HTTPStatus, model.ErrWSTokenDeleted.Message)
 		b.UnregisterBot(ctx, token, nil)
 	} else {
 		route, err := b.ResolveBotRoute(ctx, token)
@@ -731,7 +731,7 @@ func (b *ConnectionBridge) Shutdown() {
 			localGen = localGenI.(int64)
 		}
 
-		_ = conn.Close(model.ErrWSServerRestart.Code, model.ErrWSServerRestart.Message)
+		_ = conn.Close(model.ErrWSServerRestart.HTTPStatus, model.ErrWSServerRestart.Message)
 		if !b.shouldSkipSharedCleanup(ctx, token, localGen, "shutdown") {
 			b.cleanupSharedBotState(ctx, token, true)
 		}
