@@ -102,12 +102,13 @@ type StorageConfig struct {
 }
 
 type OtlpConfig struct {
-	Enabled          bool
-	ServiceName      string
-	ExportIntervalMs int
-	MetricsEnabled   bool
-	TracesEnabled    bool
-	LogsEnabled      bool
+	Enabled        bool
+	ServiceName    string
+	Endpoint       string
+	Insecure       bool
+	MetricsEnabled bool
+	TracesEnabled  bool
+	LogsEnabled    bool
 }
 
 type CorsConfig struct {
@@ -183,12 +184,13 @@ func Load() *AppConfig {
 			PublicRead:     getEnvBool("OSS_PUBLIC_READ", true),
 		},
 		OTLP: OtlpConfig{
-			Enabled:          getEnvBool("OTLP_ENABLED", false),
-			ServiceName:      getEnv("OTLP_SERVICE_NAME", "astron-claw"),
-			ExportIntervalMs: getEnvInt("OTLP_EXPORT_INTERVAL_MS", 10000),
-			MetricsEnabled:   true,
-			TracesEnabled:    false,
-			LogsEnabled:      false,
+			Enabled:        getEnvBool("OTLP_ENABLED", false),
+			ServiceName:    getEnv("OTLP_SERVICE_NAME", "astron-claw"),
+			Endpoint:       getEnv("OTLP_ENDPOINT", "localhost:4317"),
+			Insecure:       getEnvBool("OTLP_INSECURE", false),
+			MetricsEnabled: true,
+			TracesEnabled:  false,
+			LogsEnabled:    false,
 		},
 		CORS: CorsConfig{
 			Origins: splitCSV(getEnv("CORS_ORIGINS", "*")),
