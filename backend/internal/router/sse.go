@@ -44,16 +44,21 @@ func (app *App) chatSSE(c *gin.Context) {
 
 	reqStatus := "success"
 	reqCode := 200
+	durationRecorded := false
 	recordReq := func() {
 		counterAttrs := metric.WithAttributeSet(attribute.NewSet(
 			attribute.String("status", reqStatus),
 			attribute.String("code", strconv.Itoa(reqCode)),
 		))
-		histAttrs := metric.WithAttributeSet(attribute.NewSet(
-			attribute.String("status", reqStatus),
-		))
 		telemetry.ChatRequestTotal.Add(context.Background(), 1, counterAttrs)
-		telemetry.ChatRequestDuration.Record(context.Background(), time.Since(t0).Seconds(), histAttrs)
+		// Record first-byte latency for failed requests in defer;
+		// successful requests record it at SSE stream entry.
+		if !durationRecorded {
+			histAttrs := metric.WithAttributeSet(attribute.NewSet(
+				attribute.String("status", reqStatus),
+			))
+			telemetry.ChatRequestDuration.Record(context.Background(), time.Since(t0).Seconds(), histAttrs)
+		}
 	}
 	defer recordReq()
 
@@ -161,7 +166,13 @@ func (app *App) chatSSE(c *gin.Context) {
 		return
 	}
 
-	// Success — entering SSE stream
+	// Success — entering SSE stream; record first-byte latency now (not at stream end).
+	durationRecorded = true
+	telemetry.ChatRequestDuration.Record(context.Background(), time.Since(t0).Seconds(),
+		metric.WithAttributeSet(attribute.NewSet(
+			attribute.String("status", reqStatus),
+		)),
+	)
 
 	log.Info().Str("req", reqID).Str("session", pkg.SafePrefix(sessionID, 8)).Str("token", tp).
 		Msg("SSE: chat started")
