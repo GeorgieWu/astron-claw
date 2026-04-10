@@ -128,24 +128,44 @@ func (m *BotStatusMonitor) checkAllBots() {
 		return true
 	})
 
-	// 检查每个 token 的 bot 状态
+	if len(tokens) == 0 {
+		return
+	}
+
+	// Pipeline 批量查询所有 token 的 bot 状态
 	ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
 	defer cancel()
 
+	tokenList := make([]string, 0, len(tokens))
 	for token := range tokens {
-		score, err := m.rdb.ZScore(ctx, BotAliveKey, token).Result()
+		tokenList = append(tokenList, token)
+	}
+
+	pipe := m.rdb.Pipeline()
+	cmds := make([]*redis.FloatCmd, len(tokenList))
+	for i, token := range tokenList {
+		cmds[i] = pipe.ZScore(ctx, BotAliveKey, token)
+	}
+	_, err := pipe.Exec(ctx)
+	if err != nil && err != redis.Nil {
+		log.Warn().Err(err).Msg("Failed to pipeline check bot status")
+	}
+
+	now := float64(time.Now().Unix())
+	for i, cmd := range cmds {
+		score, err := cmd.Result()
 		if err == redis.Nil {
 			// token 不存在于 ZSET，bot 确实断开
-			m.notifyBotDisconnected(token)
+			m.notifyBotDisconnected(tokenList[i])
 		} else if err != nil {
-			// Redis 错误（网络问题、超时等），跳过本次检查，避免误判
+			// Redis 错误，跳过本次检查，避免误判
 			log.Warn().Err(err).
-				Str("token", pkg.SafePrefix(token, 10)).
+				Str("token", pkg.SafePrefix(tokenList[i], 10)).
 				Msg("Failed to check bot status: Redis error, skipping")
 			continue
-		} else if (float64(time.Now().Unix()) - score) >= botTTL {
+		} else if (now - score) >= botTTL {
 			// 心跳超时，bot 断开
-			m.notifyBotDisconnected(token)
+			m.notifyBotDisconnected(tokenList[i])
 		}
 	}
 }
