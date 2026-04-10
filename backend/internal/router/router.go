@@ -45,10 +45,6 @@ func SetupRouter(app *App) *gin.Engine {
 	// Health
 	r.GET("/api/health", app.healthCheck)
 
-	// Metrics
-	r.GET("/api/metrics", app.getMetrics)
-	r.DELETE("/api/metrics", app.deleteMetrics)
-
 	// Tokens (public)
 	r.POST("/api/token", app.createToken)
 	r.POST("/api/token/validate", app.validateToken)

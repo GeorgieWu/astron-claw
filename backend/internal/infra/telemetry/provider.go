@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
@@ -16,8 +16,8 @@ import (
 
 var provider *sdkmetric.MeterProvider
 
-// Init initializes OTel MeterProvider with RedisMetricExporter.
-func Init(otlpCfg config.OtlpConfig, rdb redis.UniversalClient) error {
+// Init initializes OTel MeterProvider with OTLP gRPC exporter.
+func Init(ctx context.Context, otlpCfg config.OtlpConfig) error {
 	if !otlpCfg.Enabled {
 		log.Info().Msg("OTLP telemetry disabled (OTLP_ENABLED=false)")
 		return nil
@@ -28,18 +28,17 @@ func Init(otlpCfg config.OtlpConfig, rdb redis.UniversalClient) error {
 		return nil
 	}
 
-	exporter := NewRedisMetricExporter(
-		rdb,
-		otlpCfg.ServiceName,
-		otlpCfg.ExportIntervalMs,
-	)
+	opts := []otlpmetricgrpc.Option{
+		otlpmetricgrpc.WithEndpoint(otlpCfg.Endpoint),
+	}
+	if otlpCfg.Insecure {
+		opts = append(opts, otlpmetricgrpc.WithInsecure())
+	}
 
-	reader := sdkmetric.NewPeriodicReader(
-		exporter,
-		sdkmetric.WithInterval(
-			time.Duration(otlpCfg.ExportIntervalMs)*time.Millisecond,
-		),
-	)
+	exporter, err := otlpmetricgrpc.New(ctx, opts...)
+	if err != nil {
+		return err
+	}
 
 	res := resource.NewWithAttributes(
 		semconv.SchemaURL,
@@ -66,15 +65,19 @@ func Init(otlpCfg config.OtlpConfig, rdb redis.UniversalClient) error {
 
 	provider = sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
-		sdkmetric.WithReader(reader),
+		sdkmetric.WithReader(
+			sdkmetric.NewPeriodicReader(exporter,
+				sdkmetric.WithInterval(10*time.Second),
+			),
+		),
 		sdkmetric.WithView(requestDurationView, streamDurationView),
 	)
 	otel.SetMeterProvider(provider)
 
 	log.Info().
 		Str("service", otlpCfg.ServiceName).
-		Int("interval_ms", otlpCfg.ExportIntervalMs).
-		Msg("OTLP telemetry initialised")
+		Str("endpoint", otlpCfg.Endpoint).
+		Msg("OTLP metrics exporter initialised (gRPC)")
 
 	return nil
 }

@@ -40,7 +40,7 @@ func main() {
 	}
 
 	// Initialize OTLP telemetry
-	if err := telemetry.Init(cfg.OTLP, rdb); err != nil {
+	if err := telemetry.Init(ctx, cfg.OTLP); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialise OTLP telemetry")
 	}
 	telemetry.EnsureInstruments()
