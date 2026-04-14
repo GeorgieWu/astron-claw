@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"gorm.io/gorm"
 
 	"astron-claw/backend/internal/config"
@@ -32,9 +33,10 @@ func SetupRouter(app *App, podIP string) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 
-	// Metrics middleware must be before Recovery to capture panic errors
-	r.Use(middleware.MetricsMiddleware(podIP))
 	r.Use(gin.Recovery())
+	r.Use(otelgin.Middleware("astron_claw"))
+	// Metrics middleware must be after Recovery to capture panic errors
+	r.Use(middleware.MetricsMiddleware(podIP))
 
 	// Global body size limit (32 MB)
 	r.MaxMultipartMemory = 32 << 20

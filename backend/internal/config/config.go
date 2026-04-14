@@ -188,9 +188,9 @@ func Load() *AppConfig {
 			ServiceName:    getEnv("OTLP_SERVICE_NAME", "astron-claw"),
 			Endpoint:       getEnv("OTLP_ENDPOINT", "localhost:4317"),
 			Insecure:       getEnvBool("OTLP_INSECURE", false),
-			MetricsEnabled: true,
-			TracesEnabled:  false,
-			LogsEnabled:    false,
+			MetricsEnabled: getEnvBool("OTLP_METRICS_ENABLED", true),
+			TracesEnabled:  getEnvBool("OTLP_TRACES_ENABLED", false),
+			LogsEnabled:    getEnvBool("OTLP_LOGS_ENABLED", false),
 		},
 		CORS: CorsConfig{
 			Origins: splitCSV(getEnv("CORS_ORIGINS", "*")),

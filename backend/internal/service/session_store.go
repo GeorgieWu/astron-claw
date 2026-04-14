@@ -7,11 +7,17 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"gorm.io/gorm"
 
 	"astron-claw/backend/internal/model"
 	"astron-claw/backend/internal/pkg"
 )
+
+var sessionTracer = otel.Tracer("astron-claw/service/session")
 
 const (
 	sessionsPrefix  = "bridge:sessions:"
@@ -32,6 +38,13 @@ func NewSessionStore(db *gorm.DB, rdb redis.UniversalClient) *SessionStore {
 // CreateSession persists a new session to MySQL and caches in Redis.
 // New sessions start with session_number = 1.
 func (s *SessionStore) CreateSession(ctx context.Context, token, sessionID string) (int, error) {
+	ctx, span := sessionTracer.Start(ctx, "session.create", trace.WithSpanKind(trace.SpanKindInternal))
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)),
+		attribute.String("astron.session_id", pkg.SafePrefix(sessionID, 8)),
+	)
+
 	now := time.Now().UTC()
 	const initialNumber = 1
 
@@ -42,6 +55,8 @@ func (s *SessionStore) CreateSession(ctx context.Context, token, sessionID strin
 		CreatedAt:     now,
 	}
 	if err := s.db.WithContext(ctx).Create(&session).Error; err != nil {
+		span.SetStatus(codes.Error, "create session failed")
+		span.RecordError(err)
 		return 0, fmt.Errorf("create session: %w", err)
 	}
 
@@ -52,6 +67,9 @@ func (s *SessionStore) CreateSession(ctx context.Context, token, sessionID strin
 
 // RemoveSessions deletes all session data for a token.
 func (s *SessionStore) RemoveSessions(ctx context.Context, token string) error {
+	ctx, span := sessionTracer.Start(ctx, "session.remove", trace.WithSpanKind(trace.SpanKindInternal))
+	defer span.End()
+	span.SetAttributes(attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)))
 	if err := s.db.WithContext(ctx).Where("token = ?", token).Delete(&model.ChatSession{}).Error; err != nil {
 		return fmt.Errorf("delete sessions: %w", err)
 	}
@@ -63,6 +81,12 @@ func (s *SessionStore) RemoveSessions(ctx context.Context, token string) error {
 
 // GetSession returns (sessionID, sessionNumber) if it belongs to token.
 func (s *SessionStore) GetSession(ctx context.Context, token, sessionID string) (string, int, bool) {
+	ctx, span := sessionTracer.Start(ctx, "session.get", trace.WithSpanKind(trace.SpanKindInternal))
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)),
+		attribute.String("astron.session_id", pkg.SafePrefix(sessionID, 8)),
+	)
 	var session model.ChatSession
 	err := s.db.WithContext(ctx).
 		Where("token = ? AND session_id = ?", token, sessionID).
@@ -81,6 +105,9 @@ type SessionInfo struct {
 
 // GetSessions returns all sessions for a token.
 func (s *SessionStore) GetSessions(ctx context.Context, token string) ([]SessionInfo, error) {
+	ctx, span := sessionTracer.Start(ctx, "session.list", trace.WithSpanKind(trace.SpanKindInternal))
+	defer span.End()
+	span.SetAttributes(attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)))
 	// Try Redis first
 	sessionsKey := sessionsPrefix + token
 	cached, err := s.rdb.LRange(ctx, sessionsKey, 0, -1).Result()

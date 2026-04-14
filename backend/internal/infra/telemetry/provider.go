@@ -7,27 +7,49 @@ import (
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 
 	"astron-claw/backend/internal/config"
 )
 
-var provider *sdkmetric.MeterProvider
+var (
+	meterProvider  *sdkmetric.MeterProvider
+	tracerProvider *sdktrace.TracerProvider
+)
 
-// Init initializes OTel MeterProvider with OTLP gRPC exporter.
+// Init initializes OTel MeterProvider and/or TracerProvider with OTLP gRPC exporter.
 func Init(ctx context.Context, otlpCfg config.OtlpConfig) error {
 	if !otlpCfg.Enabled {
 		log.Info().Msg("OTLP telemetry disabled (OTLP_ENABLED=false)")
 		return nil
 	}
 
-	if !otlpCfg.MetricsEnabled {
-		log.Info().Msg("OTLP metrics disabled")
-		return nil
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNameKey.String(otlpCfg.ServiceName),
+	)
+
+	if otlpCfg.MetricsEnabled {
+		if err := initMetrics(ctx, otlpCfg, res); err != nil {
+			return err
+		}
 	}
 
+	if otlpCfg.TracesEnabled {
+		if err := initTraces(ctx, otlpCfg, res); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func initMetrics(ctx context.Context, otlpCfg config.OtlpConfig, res *resource.Resource) error {
 	opts := []otlpmetricgrpc.Option{
 		otlpmetricgrpc.WithEndpoint(otlpCfg.Endpoint),
 	}
@@ -39,11 +61,6 @@ func Init(ctx context.Context, otlpCfg config.OtlpConfig) error {
 	if err != nil {
 		return err
 	}
-
-	res := resource.NewWithAttributes(
-		semconv.SchemaURL,
-		semconv.ServiceNameKey.String(otlpCfg.ServiceName),
-	)
 
 	// Custom bucket boundaries
 	requestDurationView := sdkmetric.NewView(
@@ -63,7 +80,7 @@ func Init(ctx context.Context, otlpCfg config.OtlpConfig) error {
 		},
 	)
 
-	provider = sdkmetric.NewMeterProvider(
+	meterProvider = sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(
 			sdkmetric.NewPeriodicReader(exporter,
@@ -72,7 +89,7 @@ func Init(ctx context.Context, otlpCfg config.OtlpConfig) error {
 		),
 		sdkmetric.WithView(requestDurationView, streamDurationView),
 	)
-	otel.SetMeterProvider(provider)
+	otel.SetMeterProvider(meterProvider)
 
 	log.Info().
 		Str("service", otlpCfg.ServiceName).
@@ -84,13 +101,50 @@ func Init(ctx context.Context, otlpCfg config.OtlpConfig) error {
 
 // Shutdown gracefully shuts down all providers.
 func Shutdown() {
-	if provider != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := provider.Shutdown(ctx); err != nil {
-			log.Error().Err(err).Msg("OTLP telemetry shutdown error")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if meterProvider != nil {
+		if err := meterProvider.Shutdown(ctx); err != nil {
+			log.Error().Err(err).Msg("OTLP metrics shutdown error")
 		}
-		log.Info().Msg("OTLP telemetry shut down")
-		provider = nil
+		meterProvider = nil
 	}
+
+	if tracerProvider != nil {
+		if err := tracerProvider.Shutdown(ctx); err != nil {
+			log.Error().Err(err).Msg("OTLP traces shutdown error")
+		}
+		tracerProvider = nil
+	}
+
+	log.Info().Msg("OTLP telemetry shut down")
+}
+
+func initTraces(ctx context.Context, otlpCfg config.OtlpConfig, res *resource.Resource) error {
+	opts := []otlptracegrpc.Option{
+		otlptracegrpc.WithEndpoint(otlpCfg.Endpoint),
+	}
+	if otlpCfg.Insecure {
+		opts = append(opts, otlptracegrpc.WithInsecure())
+	}
+
+	exporter, err := otlptracegrpc.New(ctx, opts...)
+	if err != nil {
+		return err
+	}
+
+	tracerProvider = sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(res),
+	)
+	otel.SetTracerProvider(tracerProvider)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	log.Info().
+		Str("service", otlpCfg.ServiceName).
+		Str("endpoint", otlpCfg.Endpoint).
+		Msg("OTLP traces exporter initialised (gRPC)")
+
+	return nil
 }

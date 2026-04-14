@@ -8,11 +8,16 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"astron-claw/backend/internal/model"
 	"astron-claw/backend/internal/pkg"
 	"astron-claw/backend/internal/service"
 )
+
+var wsTracer = otel.Tracer("astron-claw/router/websocket")
 
 var wsUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -52,20 +57,34 @@ func (app *App) wsBot(c *gin.Context) {
 		Token: botToken,
 	}
 
-	ctx := c.Request.Context()
+	ctx, regSpan := wsTracer.Start(c.Request.Context(), "bot.connection.register",
+		trace.WithSpanKind(trace.SpanKindInternal))
+	regSpan.SetAttributes(
+		attribute.String("astron.token_prefix", tp),
+		attribute.String("astron.client_addr", clientAddr),
+	)
+
 	if err := app.Bridge.RegisterBot(ctx, botToken, botConn); err != nil {
+		regSpan.End()
 		log.Error().Err(err).Str("token", tp).Msg("Failed to register bot")
 		conn.Close()
 		return
 	}
+	regSpan.End()
 
 	log.Info().Str("token", tp).Str("from", clientAddr).Msg("Bot connected")
 	app.Bridge.NotifyBotConnected(botToken)
 
 	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		unregCtx, unregSpan := wsTracer.Start(context.Background(), "bot.connection.unregister",
+			trace.WithSpanKind(trace.SpanKindInternal))
+		unregSpan.SetAttributes(
+			attribute.String("astron.token_prefix", tp),
+		)
+		cleanupCtx, cancel := context.WithTimeout(unregCtx, 10*time.Second)
 		defer cancel()
 		app.Bridge.UnregisterBot(cleanupCtx, botToken, botConn)
+		unregSpan.End()
 	}()
 
 	for {

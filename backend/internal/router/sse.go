@@ -10,8 +10,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"astron-claw/backend/internal/infra/telemetry"
 	"astron-claw/backend/internal/middleware"
@@ -19,6 +22,8 @@ import (
 	"astron-claw/backend/internal/pkg"
 	"astron-claw/backend/internal/service"
 )
+
+var sseTracer = otel.Tracer("astron-claw/router/sse")
 
 const (
 	sseTimeout        = 600 // 10 minutes
@@ -41,6 +46,10 @@ type MediaItem struct {
 func (app *App) chatSSE(c *gin.Context) {
 	tokenStr := c.GetString("token")
 	tp := telemetry.TokenPrefix(tokenStr)
+
+	ctx, turnSpan := sseTracer.Start(c.Request.Context(), "chat.turn",
+		trace.WithSpanKind(trace.SpanKindServer))
+	defer turnSpan.End()
 
 	var body ChatRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -89,37 +98,58 @@ func (app *App) chatSSE(c *gin.Context) {
 	}
 
 	// Check bot connected
-	ctx := c.Request.Context()
-	if !app.Bridge.IsBotConnected(ctx, tokenStr) {
-		log.Warn().Str("token", tp).Msg("SSE: no bot connected")
-		c.Set("metrics_code", strconv.Itoa(model.CodeChatNoBot))
-		model.ErrorResponse(c, model.ErrChatNoBot)
-		return
+	{
+		_, availSpan := sseTracer.Start(ctx, "chat.bot.availability_check",
+			trace.WithSpanKind(trace.SpanKindInternal))
+		connected := app.Bridge.IsBotConnected(ctx, tokenStr)
+		availSpan.SetAttributes(attribute.Bool("astron.bot_connected", connected))
+		availSpan.End()
+		if !connected {
+			log.Warn().Str("token", tp).Msg("SSE: no bot connected")
+			c.Set("metrics_code", strconv.Itoa(model.CodeChatNoBot))
+			model.ErrorResponse(c, model.ErrChatNoBot)
+			return
+		}
 	}
 
 	// Resolve session
 	var sessionID string
 	var sessionNumber int
-	if body.SessionID != nil && *body.SessionID != "" {
-		sid, snum, found := app.Bridge.GetSession(ctx, tokenStr, *body.SessionID)
-		if !found {
-			log.Warn().Str("session", *body.SessionID).Str("token", tp).
-				Msg("SSE: session not found")
-			c.Set("metrics_code", strconv.Itoa(model.CodeSessionNotFound))
-			model.ErrorResponse(c, model.ErrSessionNotFound)
-			return
+	isNewSession := false
+	{
+		resolveCtx, resolveSpan := sseTracer.Start(ctx, "chat.session.resolve",
+			trace.WithSpanKind(trace.SpanKindInternal))
+		if body.SessionID != nil && *body.SessionID != "" {
+			sid, snum, found := app.Bridge.GetSession(resolveCtx, tokenStr, *body.SessionID)
+			if !found {
+				resolveSpan.End()
+				log.Warn().Str("session", *body.SessionID).Str("token", tp).
+					Msg("SSE: session not found")
+				c.Set("metrics_code", strconv.Itoa(model.CodeSessionNotFound))
+				model.ErrorResponse(c, model.ErrSessionNotFound)
+				return
+			}
+			sessionID = sid
+			sessionNumber = snum
+		} else {
+			var err error
+			sessionID, sessionNumber, err = app.Bridge.CreateSession(resolveCtx, tokenStr)
+			if err != nil {
+				resolveSpan.SetStatus(codes.Error, "create session failed")
+				resolveSpan.RecordError(err)
+				resolveSpan.End()
+				log.Error().Err(err).Str("token", tp).Msg("SSE: failed to create session")
+				c.Set("metrics_code", strconv.Itoa(model.CodeSessionCreateFailed))
+				model.ErrorResponse(c, model.ErrSessionCreateFailed)
+				return
+			}
+			isNewSession = true
 		}
-		sessionID = sid
-		sessionNumber = snum
-	} else {
-		var err error
-		sessionID, sessionNumber, err = app.Bridge.CreateSession(ctx, tokenStr)
-		if err != nil {
-			log.Error().Err(err).Str("token", tp).Msg("SSE: failed to create session")
-			c.Set("metrics_code", strconv.Itoa(model.CodeSessionCreateFailed))
-			model.ErrorResponse(c, model.ErrSessionCreateFailed)
-			return
-		}
+		resolveSpan.SetAttributes(
+			attribute.String("astron.session_id", pkg.SafePrefix(sessionID, 8)),
+			attribute.Bool("astron.is_new_session", isNewSession),
+		)
+		resolveSpan.End()
 	}
 
 	// Clear stale events and reset consumer group
@@ -129,13 +159,32 @@ func (app *App) chatSSE(c *gin.Context) {
 	app.Bridge.TrackChatInbox(ctx, tokenStr, inbox)
 
 	// Send message to bot
-	reqID, err := app.Bridge.SendToBot(ctx, tokenStr, content, mediaURLs, sessionID)
-	if err != nil {
-		log.Error().Err(err).Str("token", tp).Msg("SSE: send_to_bot failed")
-		c.Set("metrics_code", strconv.Itoa(model.CodeChatSendFailed))
-		model.ErrorResponse(c, model.ErrChatSendFailed)
-		return
+	var reqID string
+	{
+		_, dispatchSpan := sseTracer.Start(ctx, "chat.bot.dispatch",
+			trace.WithSpanKind(trace.SpanKindInternal))
+		var err error
+		reqID, err = app.Bridge.SendToBot(ctx, tokenStr, content, mediaURLs, sessionID)
+		if err != nil {
+			dispatchSpan.SetStatus(codes.Error, "send to bot failed")
+			dispatchSpan.RecordError(err)
+			dispatchSpan.End()
+			log.Error().Err(err).Str("token", tp).Msg("SSE: send_to_bot failed")
+			c.Set("metrics_code", strconv.Itoa(model.CodeChatSendFailed))
+			model.ErrorResponse(c, model.ErrChatSendFailed)
+			return
+		}
+		dispatchSpan.SetAttributes(attribute.String("astron.turn_id", reqID))
+		dispatchSpan.End()
 	}
+
+	// Set turn span attributes
+	turnSpan.SetAttributes(
+		attribute.String("astron.token_prefix", tp),
+		attribute.String("astron.session_id", pkg.SafePrefix(sessionID, 8)),
+		attribute.String("astron.turn_id", reqID),
+		attribute.Bool("astron.is_new_session", isNewSession),
+	)
 
 	// Check Flusher support BEFORE marking as SSE stream
 	flusher, ok := c.Writer.(http.Flusher)
@@ -166,19 +215,27 @@ func (app *App) chatSSE(c *gin.Context) {
 	log.Info().Str("req", reqID).Str("session", pkg.SafePrefix(sessionID, 8)).Str("token", tp).
 		Msg("SSE: chat started")
 
-	// Set SSE headers
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	c.Status(http.StatusOK)
-
 	// Track active stream
 	streamStart := time.Now()
 	closeReason := "done"
 	streamCode := "0"
 	funcPath := c.GetString("metrics_func")
 	podIP := c.GetString("metrics_ip")
+
+	// Start response stream span
+	_, streamSpan := sseTracer.Start(ctx, "chat.response.stream",
+		trace.WithSpanKind(trace.SpanKindInternal))
+	defer func() {
+		streamSpan.SetAttributes(attribute.String("astron.close_reason", closeReason))
+		streamSpan.End()
+	}()
+
+	// Set SSE headers
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
 
 	telemetry.ChatActiveStreams.Add(ctx, 1,
 		metric.WithAttributes(
@@ -243,7 +300,14 @@ func (app *App) chatSSE(c *gin.Context) {
 		case <-c.Request.Context().Done():
 			closeReason = "client_disconnect"
 			log.Info().Str("token", tp).Msg("SSE: client disconnected")
-			go app.Bridge.SendCancelToBot(context.Background(), tokenStr, sessionID)
+			// Create cancel span in background context but preserve trace
+			cancelCtx := trace.ContextWithSpan(context.Background(), trace.SpanFromContext(ctx))
+			go func() {
+				_, cancelSpan := sseTracer.Start(cancelCtx, "chat.cancel",
+					trace.WithSpanKind(trace.SpanKindInternal))
+				defer cancelSpan.End()
+				app.Bridge.SendCancelToBot(cancelCtx, tokenStr, sessionID)
+			}()
 			return
 		case <-botDisconnectC:
 			closeReason = "bot_disconnect"
