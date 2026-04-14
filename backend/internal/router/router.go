@@ -28,9 +28,12 @@ type App struct {
 }
 
 // SetupRouter configures all routes and middleware.
-func SetupRouter(app *App) *gin.Engine {
+func SetupRouter(app *App, podIP string) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+
+	// Metrics middleware must be before Recovery to capture panic errors
+	r.Use(middleware.MetricsMiddleware(podIP))
 	r.Use(gin.Recovery())
 
 	// Global body size limit (32 MB)
@@ -85,7 +88,7 @@ func (app *App) adminAuthMiddleware() gin.HandlerFunc {
 		adminSession, _ := c.Cookie("admin_session")
 		if !app.AdminAuth.ValidateSession(c.Request.Context(), adminSession) {
 			log.Warn().Msg("Admin auth rejected: missing or invalid session cookie")
-			model.ErrorResponse(c, model.ErrAuthUnauthorized)
+			middleware.MetricsErrorResponse(c, model.ErrAuthUnauthorized)
 			c.Abort()
 			return
 		}

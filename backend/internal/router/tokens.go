@@ -4,6 +4,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
+	"astron-claw/backend/internal/middleware"
+	"astron-claw/backend/internal/model"
 	"astron-claw/backend/internal/pkg"
 )
 
@@ -11,7 +13,7 @@ func (app *App) createToken(c *gin.Context) {
 	token, err := app.TokenMgr.Generate(c.Request.Context(), "", 0)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to generate token")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
 	log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Token created via public API")
@@ -23,7 +25,7 @@ func (app *App) validateToken(c *gin.Context) {
 		Token string `json:"token"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"code": 400, "error": "Invalid request"})
+		middleware.MetricsErrorResponse(c, model.ErrChatInvalidReq)
 		return
 	}
 

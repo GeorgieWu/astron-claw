@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"astron-claw/backend/internal/infra/telemetry"
+	"astron-claw/backend/internal/middleware"
 	"astron-claw/backend/internal/model"
 	"astron-claw/backend/internal/pkg"
 	"astron-claw/backend/internal/service"
@@ -38,34 +39,12 @@ type MediaItem struct {
 }
 
 func (app *App) chatSSE(c *gin.Context) {
-	t0 := time.Now()
 	tokenStr := c.GetString("token")
 	tp := telemetry.TokenPrefix(tokenStr)
 
-	reqStatus := "success"
-	reqCode := 200
-	durationRecorded := false
-	recordReq := func() {
-		counterAttrs := metric.WithAttributeSet(attribute.NewSet(
-			attribute.String("status", reqStatus),
-			attribute.String("code", strconv.Itoa(reqCode)),
-		))
-		telemetry.ChatRequestTotal.Add(context.Background(), 1, counterAttrs)
-		// Record first-byte latency for failed requests in defer;
-		// successful requests record it at SSE stream entry.
-		if !durationRecorded {
-			histAttrs := metric.WithAttributeSet(attribute.NewSet(
-				attribute.String("status", reqStatus),
-			))
-			telemetry.ChatRequestDuration.Record(context.Background(), time.Since(t0).Seconds(), histAttrs)
-		}
-	}
-	defer recordReq()
-
 	var body ChatRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		reqStatus = "bad_request"
-		reqCode = 400
+		c.Set("metrics_code", strconv.Itoa(model.CodeChatInvalidReq))
 		model.ErrorResponse(c, model.ErrChatInvalidReq)
 		return
 	}
@@ -76,8 +55,7 @@ func (app *App) chatSSE(c *gin.Context) {
 
 	if len(body.Media) > 10 {
 		log.Warn().Str("token", tp).Msg("SSE: bad request — too many media items")
-		reqStatus = "bad_request"
-		reqCode = 400
+		c.Set("metrics_code", strconv.Itoa(model.CodeMediaTooMany))
 		model.ErrorResponse(c, model.ErrMediaTooMany)
 		return
 	}
@@ -88,8 +66,7 @@ func (app *App) chatSSE(c *gin.Context) {
 				if !strings.HasPrefix(item.Content, "http://") && !strings.HasPrefix(item.Content, "https://") {
 					log.Warn().Str("url", item.Content).Str("token", tp).
 						Msg("SSE: bad request — invalid media URL scheme")
-					reqStatus = "bad_request"
-					reqCode = 400
+					c.Set("metrics_code", strconv.Itoa(model.CodeMediaBadURLScheme))
 					model.ErrorResponse(c, model.ErrMediaBadURLScheme)
 					return
 				}
@@ -97,8 +74,7 @@ func (app *App) chatSSE(c *gin.Context) {
 			} else {
 				log.Warn().Str("type", item.Type).Str("token", tp).
 					Msg("SSE: bad request — unsupported media type")
-				reqStatus = "bad_request"
-				reqCode = 400
+				c.Set("metrics_code", strconv.Itoa(model.CodeMediaUnsupportedType))
 				model.ErrorResponse(c, model.ErrMediaUnsupportedType)
 				return
 			}
@@ -107,8 +83,7 @@ func (app *App) chatSSE(c *gin.Context) {
 
 	if content == "" && len(mediaURLs) == 0 {
 		log.Warn().Str("token", tp).Msg("SSE: bad request — empty message")
-		reqStatus = "bad_request"
-		reqCode = 400
+		c.Set("metrics_code", strconv.Itoa(model.CodeChatEmptyMessage))
 		model.ErrorResponse(c, model.ErrChatEmptyMessage)
 		return
 	}
@@ -117,8 +92,7 @@ func (app *App) chatSSE(c *gin.Context) {
 	ctx := c.Request.Context()
 	if !app.Bridge.IsBotConnected(ctx, tokenStr) {
 		log.Warn().Str("token", tp).Msg("SSE: no bot connected")
-		reqStatus = "no_bot"
-		reqCode = 400
+		c.Set("metrics_code", strconv.Itoa(model.CodeChatNoBot))
 		model.ErrorResponse(c, model.ErrChatNoBot)
 		return
 	}
@@ -131,8 +105,7 @@ func (app *App) chatSSE(c *gin.Context) {
 		if !found {
 			log.Warn().Str("session", *body.SessionID).Str("token", tp).
 				Msg("SSE: session not found")
-			reqStatus = "session_not_found"
-			reqCode = 404
+			c.Set("metrics_code", strconv.Itoa(model.CodeSessionNotFound))
 			model.ErrorResponse(c, model.ErrSessionNotFound)
 			return
 		}
@@ -143,8 +116,7 @@ func (app *App) chatSSE(c *gin.Context) {
 		sessionID, sessionNumber, err = app.Bridge.CreateSession(ctx, tokenStr)
 		if err != nil {
 			log.Error().Err(err).Str("token", tp).Msg("SSE: failed to create session")
-			reqStatus = "error"
-			reqCode = model.ErrSessionCreateFailed.Code
+			c.Set("metrics_code", strconv.Itoa(model.CodeSessionCreateFailed))
 			model.ErrorResponse(c, model.ErrSessionCreateFailed)
 			return
 		}
@@ -160,25 +132,35 @@ func (app *App) chatSSE(c *gin.Context) {
 	reqID, err := app.Bridge.SendToBot(ctx, tokenStr, content, mediaURLs, sessionID)
 	if err != nil {
 		log.Error().Err(err).Str("token", tp).Msg("SSE: send_to_bot failed")
-		reqStatus = "send_fail"
-		reqCode = 500
+		c.Set("metrics_code", strconv.Itoa(model.CodeChatSendFailed))
 		model.ErrorResponse(c, model.ErrChatSendFailed)
 		return
 	}
 
-	// Success — entering SSE stream; record first-byte latency now (not at stream end).
-	durationRecorded = true
-	telemetry.ChatRequestDuration.Record(context.Background(), time.Since(t0).Seconds(),
-		metric.WithAttributeSet(attribute.NewSet(
-			attribute.String("status", reqStatus),
-		)),
-	)
+	// Success — entering SSE stream
+	// Mark as SSE stream to prevent middleware from recording request.duration
+	c.Set("metrics_sse_stream", true)
+
+	// Record first-byte latency (TTFB) before entering stream
+	if metricsStart, exists := c.Get("metrics_start"); exists {
+		if startTime, ok := metricsStart.(time.Time); ok {
+			funcPath := c.GetString("metrics_func")
+			podIP := c.GetString("metrics_ip")
+			telemetry.ChatRequestDuration.Record(ctx, time.Since(startTime).Seconds(),
+				metric.WithAttributes(
+					attribute.String("func", funcPath),
+					attribute.String("ip", podIP),
+					attribute.String("code", "0"),
+				))
+		}
+	}
 
 	log.Info().Str("req", reqID).Str("session", pkg.SafePrefix(sessionID, 8)).Str("token", tp).
 		Msg("SSE: chat started")
 
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
+		c.Set("metrics_code", strconv.Itoa(model.CodeChatStreamUnsupported))
 		model.ErrorResponse(c, model.ErrChatStreamUnsupported)
 		return
 	}
@@ -193,7 +175,14 @@ func (app *App) chatSSE(c *gin.Context) {
 	// Track active stream
 	streamStart := time.Now()
 	closeReason := "done"
-	telemetry.ChatActiveStreams.Add(ctx, 1)
+	funcPath := c.GetString("metrics_func")
+	podIP := c.GetString("metrics_ip")
+
+	telemetry.ChatActiveStreams.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("func", funcPath),
+			attribute.String("ip", podIP),
+		))
 
 	// 注册SSE连接到bot状态监控器
 	var sseConn *service.SSEConnection
@@ -203,13 +192,19 @@ func (app *App) chatSSE(c *gin.Context) {
 	}
 
 	defer func() {
-		telemetry.ChatActiveStreams.Add(context.Background(), -1)
+		telemetry.ChatActiveStreams.Add(context.Background(), -1,
+			metric.WithAttributes(
+				attribute.String("func", funcPath),
+				attribute.String("ip", podIP),
+			))
 		streamDuration := time.Since(streamStart).Seconds()
 		telemetry.ChatStreamDuration.Record(context.Background(), streamDuration,
-			metric.WithAttributeSet(attribute.NewSet(
+			metric.WithAttributes(
+				attribute.String("func", funcPath),
+				attribute.String("ip", podIP),
+				attribute.String("code", "0"),
 				attribute.String("close_reason", closeReason),
-			)),
-		)
+			))
 	}()
 
 	// Stream events — use a deadline tracker instead of re-creating contexts
@@ -370,7 +365,7 @@ func (app *App) listSessions(c *gin.Context) {
 	sessions, err := app.Bridge.GetSessions(c.Request.Context(), tokenStr)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to list sessions")
-		model.ErrorResponse(c, model.ErrChatInternalError)
+		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
 
@@ -392,14 +387,14 @@ func (app *App) createSession(c *gin.Context) {
 	sessionID, sessionNumber, err := app.Bridge.CreateSession(ctx, tokenStr)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create session")
-		model.ErrorResponse(c, model.ErrSessionCreateFailed)
+		middleware.MetricsErrorResponse(c, model.ErrSessionCreateFailed)
 		return
 	}
 
 	sessions, err := app.Bridge.GetSessions(ctx, tokenStr)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to list sessions")
-		model.ErrorResponse(c, model.ErrChatInternalError)
+		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
 

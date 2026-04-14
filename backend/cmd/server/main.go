@@ -79,6 +79,12 @@ func main() {
 	botStatusMonitor := service.NewBotStatusMonitor(rdb)
 	botStatusMonitor.Start()
 
+	// Read Pod IP for metrics
+	podIP := os.Getenv("POD_IP")
+	if podIP == "" {
+		podIP = "unknown"
+	}
+
 	// Build the app and router
 	app := &router.App{
 		DB:               db,
@@ -92,7 +98,7 @@ func main() {
 		Config:           cfg,
 		BotStatusMonitor: botStatusMonitor,
 	}
-	r := router.SetupRouter(app)
+	r := router.SetupRouter(app, podIP)
 
 	// Start HTTP server
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)

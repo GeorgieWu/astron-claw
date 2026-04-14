@@ -30,7 +30,7 @@ func EnsureInstruments() {
 	var err error
 	ChatRequestTotal, err = meter.Int64Counter(
 		"bridge.chat.requests",
-		metric.WithDescription("/bridge/chat request total"),
+		metric.WithDescription("HTTP request total (all endpoints)"),
 	)
 	if err != nil {
 		ChatRequestTotal, _ = meter.Int64Counter("bridge.chat.requests")
@@ -38,7 +38,7 @@ func EnsureInstruments() {
 
 	ChatRequestDuration, err = meter.Float64Histogram(
 		"bridge.chat.request.duration",
-		metric.WithDescription("/bridge/chat first-byte latency"),
+		metric.WithDescription("HTTP request duration (all endpoints)"),
 		metric.WithUnit("s"),
 	)
 	if err != nil {
@@ -47,7 +47,7 @@ func EnsureInstruments() {
 
 	ChatStreamDuration, err = meter.Float64Histogram(
 		"bridge.chat.stream.duration",
-		metric.WithDescription("SSE stream duration"),
+		metric.WithDescription("SSE stream duration (/bridge/chat only)"),
 		metric.WithUnit("s"),
 	)
 	if err != nil {
@@ -56,7 +56,7 @@ func EnsureInstruments() {
 
 	ChatActiveStreams, err = meter.Int64UpDownCounter(
 		"bridge.chat.active_streams",
-		metric.WithDescription("Current active SSE stream count"),
+		metric.WithDescription("Current active SSE stream count (/bridge/chat only)"),
 	)
 	if err != nil {
 		ChatActiveStreams, _ = meter.Int64UpDownCounter("bridge.chat.active_streams")
