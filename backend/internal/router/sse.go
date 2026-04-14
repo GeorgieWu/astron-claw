@@ -137,6 +137,14 @@ func (app *App) chatSSE(c *gin.Context) {
 		return
 	}
 
+	// Check Flusher support BEFORE marking as SSE stream
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.Set("metrics_code", strconv.Itoa(model.CodeChatStreamUnsupported))
+		model.ErrorResponse(c, model.ErrChatStreamUnsupported)
+		return
+	}
+
 	// Success — entering SSE stream
 	// Mark as SSE stream to prevent middleware from recording request.duration
 	c.Set("metrics_sse_stream", true)
@@ -158,13 +166,6 @@ func (app *App) chatSSE(c *gin.Context) {
 	log.Info().Str("req", reqID).Str("session", pkg.SafePrefix(sessionID, 8)).Str("token", tp).
 		Msg("SSE: chat started")
 
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		c.Set("metrics_code", strconv.Itoa(model.CodeChatStreamUnsupported))
-		model.ErrorResponse(c, model.ErrChatStreamUnsupported)
-		return
-	}
-
 	// Set SSE headers
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -175,6 +176,7 @@ func (app *App) chatSSE(c *gin.Context) {
 	// Track active stream
 	streamStart := time.Now()
 	closeReason := "done"
+	streamCode := "0"
 	funcPath := c.GetString("metrics_func")
 	podIP := c.GetString("metrics_ip")
 
@@ -202,7 +204,7 @@ func (app *App) chatSSE(c *gin.Context) {
 			metric.WithAttributes(
 				attribute.String("func", funcPath),
 				attribute.String("ip", podIP),
-				attribute.String("code", "0"),
+				attribute.String("code", streamCode),
 				attribute.String("close_reason", closeReason),
 			))
 	}()
@@ -217,6 +219,8 @@ func (app *App) chatSSE(c *gin.Context) {
 	})
 	if _, err := c.Writer.WriteString(sessionEvent); err != nil {
 		closeReason = "write_error"
+		streamCode = strconv.Itoa(model.CodeChatInternalError)
+		c.Set("metrics_code", streamCode)
 		return
 	}
 	flusher.Flush()
@@ -243,6 +247,8 @@ func (app *App) chatSSE(c *gin.Context) {
 			return
 		case <-botDisconnectC:
 			closeReason = "bot_disconnect"
+			streamCode = strconv.Itoa(model.CodeChatNoBot)
+			c.Set("metrics_code", streamCode)
 			log.Info().Str("token", tp).Msg("SSE: bot disconnected")
 			errEvent := pkg.FormatSSEEvent("error", map[string]interface{}{
 				"content": model.ErrChatNoBot.Message,
@@ -256,6 +262,8 @@ func (app *App) chatSSE(c *gin.Context) {
 		// Check timeout
 		if time.Now().After(deadline) {
 			closeReason = "timeout"
+			streamCode = strconv.Itoa(model.CodeChatStreamTimeout)
+			c.Set("metrics_code", streamCode)
 			errEvent := pkg.FormatSSEEvent("error", map[string]interface{}{
 				"content": model.ErrChatStreamTimeout.Message,
 			})
@@ -268,6 +276,8 @@ func (app *App) chatSSE(c *gin.Context) {
 		if err != nil {
 			log.Error().Err(err).Str("token", tp).Msg("SSE: consume error")
 			closeReason = "error"
+			streamCode = strconv.Itoa(model.CodeChatInternalError)
+			c.Set("metrics_code", streamCode)
 			errEvent := pkg.FormatSSEEvent("error", map[string]interface{}{
 				"content": model.ErrChatInternalError.Message,
 			})
@@ -285,6 +295,8 @@ func (app *App) chatSSE(c *gin.Context) {
 				return
 			case <-botDisconnectC:
 				closeReason = "bot_disconnect"
+				streamCode = strconv.Itoa(model.CodeChatNoBot)
+				c.Set("metrics_code", streamCode)
 				log.Info().Str("token", tp).Msg("SSE: bot disconnected")
 				errEvent := pkg.FormatSSEEvent("error", map[string]interface{}{
 					"content": model.ErrChatNoBot.Message,
@@ -354,6 +366,11 @@ func (app *App) chatSSE(c *gin.Context) {
 
 		// Terminal events
 		if eventType == "done" || eventType == "error" {
+			if eventType == "error" {
+				closeReason = "error"
+				streamCode = strconv.Itoa(model.CodeBotUnknownError)
+				c.Set("metrics_code", streamCode)
+			}
 			return
 		}
 	}
