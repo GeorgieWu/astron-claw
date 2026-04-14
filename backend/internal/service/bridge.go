@@ -15,10 +15,16 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"astron-claw/backend/internal/model"
 	"astron-claw/backend/internal/pkg"
 )
+
+var bridgeTracer = otel.Tracer("astron-claw/service/bridge")
 
 const (
 	BotAliveKey        = "bridge:bot_alive"
@@ -29,6 +35,7 @@ const (
 	CleanupLockKey     = "bridge:cleanup_lock"
 	BotGenPrefix       = "bridge:bot_gen:"
 	WorkerInboxPrefix  = "bridge:worker_inbox:"
+	TraceCtxPrefix     = "bridge:trace_ctx:"
 
 	BotTTL            = 30 * time.Second
 	HeartbeatInterval = 10 * time.Second
@@ -559,6 +566,14 @@ func (b *ConnectionBridge) SendToBot(ctx context.Context, token, userMessage str
 		log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to resolve bot route")
 		return "", err
 	}
+
+	// Store trace context for best-effort reverse link (Bot → Chat)
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	if data, err := json.Marshal(map[string]string(carrier)); err == nil {
+		b.rdb.Set(ctx, TraceCtxPrefix+sessionID, data, 600*time.Second)
+	}
+
 	if err := b.PublishToWorkerInbox(ctx, route.WorkerID, token, rpcRequest); err != nil {
 		log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to push to bot inbox")
 		return "", err
@@ -593,6 +608,27 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 		chatEvent := TranslateBotEvent(method, params)
 		sessionID, _ := getNestedString(params, "sessionId")
 
+		// Restore trace context from Redis (best-effort)
+		if sessionID != "" {
+			if raw, err := b.rdb.Get(context.Background(), TraceCtxPrefix+sessionID).Result(); err == nil {
+				var m map[string]string
+				if json.Unmarshal([]byte(raw), &m) == nil {
+					ctx = otel.GetTextMapPropagator().Extract(context.Background(), propagation.MapCarrier(m))
+				}
+			}
+		}
+
+		// Create bot.message.receive span
+		ctx, msgSpan := bridgeTracer.Start(ctx, "bot.message.receive",
+			trace.WithSpanKind(trace.SpanKindInternal))
+		msgSpan.SetAttributes(
+			attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)),
+			attribute.String("astron.method", method),
+		)
+		if sessionID != "" {
+			msgSpan.SetAttributes(attribute.String("astron.session_id", pkg.SafePrefix(sessionID, 8)))
+		}
+
 		if sessionID == "" {
 			log.Warn().Str("method", method).Str("token", pkg.SafePrefix(token, 10)).
 				Msg("Bot notification missing sessionId")
@@ -613,6 +649,8 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 			log.Warn().Str("method", method).Str("token", pkg.SafePrefix(token, 10)).
 				Msg("Bot event dropped: untranslatable")
 		}
+
+		msgSpan.End()
 	}
 
 	// Result / Error
@@ -692,6 +730,13 @@ func (b *ConnectionBridge) cleanupSharedBotState(ctx context.Context, token stri
 }
 
 func (b *ConnectionBridge) sendToSession(ctx context.Context, token, sessionID string, event map[string]interface{}) {
+	ctx, span := bridgeTracer.Start(ctx, "chat.message.deliver", trace.WithSpanKind(trace.SpanKindInternal))
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)),
+		attribute.String("astron.session_id", pkg.SafePrefix(sessionID, 8)),
+	)
+
 	if b.shuttingDown.Load() {
 		return
 	}

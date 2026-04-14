@@ -49,15 +49,14 @@
 | `session.remove` | `service/session_store.go:54` | 缺失 | 第一阶段 |
 | `bot.connection.register` | `router/websocket.go:56 RegisterBot` | 缺失 | 第一阶段 |
 | `bot.connection.unregister` | `router/websocket.go:65 UnregisterBot` | 缺失 | 第一阶段 |
-| `bot.message.receive` | `service/bridge.go:573 HandleBotMessage` | 缺失 | **第二阶段** |
-| `bot.event.translate` | `service/bridge.go:748 TranslateBotEvent` | 缺失 | **第二阶段** |
-| `chat.message.deliver` | `service/bridge.go:694 sendToSession` | 缺失 | **第二阶段** |
+| `bot.message.receive` | `service/bridge.go:573 HandleBotMessage` | 缺失 | **已实现（服务端映射）** |
+| `bot.event.translate` | `service/bridge.go:748 TranslateBotEvent` | 缺失 | 不实现（纯函数，无 I/O） |
+| `chat.message.deliver` | `service/bridge.go:694 sendToSession` | 缺失 | **已实现（服务端映射）** |
 | `bot.connection.heartbeat_check` | `service/bot_status_monitor.go:122` | 缺失 | 可选 |
 
-**第二阶段前置条件：**
-- 反向链路（Bot → Chat）需要协议扩展或服务端 turn-context 映射
-- 当前 Bot 插件回传的 `session/update` 不带 `requestId`/`traceparent`
-- 跨 Worker 的 `workerInboxMessage` 需要增加 `traceparent` 字段
+**反向链路实现方式：**
+- 采用服务端映射（`sessionId → trace context` 存 Redis），无需修改 Bot 插件协议
+- 限制：best-effort，只关联最新 turn，并发场景可能错乱
 
 ---
 
@@ -342,45 +341,28 @@ func (s *SessionStore) CreateSession(ctx context.Context, token string) (*model.
 
 ---
 
-### 第五步：反向链路（第二阶段，需协议扩展）
+### 第五步：反向链路（服务端映射，已实现）
 
-**前置条件：**
-1. `workerInboxMessage`（`bridge_worker_inbox.go:14`）增加 `Traceparent string` 字段
-2. Bot 插件 `session/update` 回传时携带 `requestId` 或 `traceparent`
-3. 或在服务端维护 `turn-context` 映射（sessionId + turnId → trace context）
+**方案：** 服务端 `sessionId → trace context` 映射（Redis），无需修改 Bot 插件协议。
 
-**实现方案：**
+**限制（best-effort）：** 只关联最新的 turn，并发场景可能错乱。
+
+**实现：**
+
+- `SendToBot`（`bridge.go`）：将当前 trace context 序列化存入 Redis，key=`bridge:trace_ctx:<sessionId>`，TTL=600s
+- `HandleBotMessage`（`bridge.go`）：提取 sessionId 后从 Redis 恢复 trace context，作为 `bot.message.receive` span 的 parent
+- `sendToSession`（`bridge.go`）：入口添加 `chat.message.deliver` span
+
+**Span 链路：**
 
 ```
-bot.message.receive      ← HandleBotMessage:573，从消息体提取 context
-└── bot.event.translate  ← TranslateBotEvent:748
-chat.message.deliver     ← sendToSession:694，SpanKind=PRODUCER
+chat.turn
+└── chat.bot.dispatch
+bot.message.receive   ← parent = chat.turn（通过 Redis 映射恢复）
+└── chat.message.deliver
 ```
 
-**跨 Worker context propagation：**
-
-```go
-// SendToBot 发布时（bridge.go:545）
-rpcRequest := map[string]interface{}{
-    "jsonrpc": "2.0",
-    "id":      requestID,
-    "method":  "session/prompt",
-    "params": map[string]interface{}{
-        "sessionId": sessionID,
-        "prompt": map[string]interface{}{
-            "content": contentItems,
-        },
-        "traceparent": propagation.TraceContext{}.Inject(ctx, carrier),  // 注入 W3C Trace Context
-    },
-}
-
-// runWorkerInboxConsumer 消费时（bridge_worker_inbox.go:66）
-// 从消息体提取 traceparent，恢复 parent context
-ctx := propagation.TraceContext{}.Extract(context.Background(), carrier)
-ctx, span := tracer.Start(ctx, "bot.message.receive")
-```
-
-**注意：** 此步骤需要同步修改 Bot 插件协议，不是纯后端工作。
+**升级路径：** 若未来 Bot 插件支持回传 `traceparent`，可直接从消息体提取，移除 Redis 映射。
 
 ---
 
