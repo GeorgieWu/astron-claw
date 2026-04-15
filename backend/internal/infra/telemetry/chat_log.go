@@ -15,6 +15,7 @@ func EnsureLogger() {
 }
 
 type ChatLogRecord struct {
+	LogType     string
 	TokenID     string
 	SessionID   string
 	DurationMs  float64
@@ -28,11 +29,16 @@ type ChatLogRecord struct {
 func EmitChatLog(ctx context.Context, rec ChatLogRecord) {
 	severity, severityText := severityFromCode(rec.Code)
 
+	logType := rec.LogType
+	if logType == "" {
+		logType = "server_log"
+	}
+
 	var r log.Record
 	r.SetTimestamp(time.Now())
 	r.SetSeverity(severity)
 	r.SetSeverityText(severityText)
-	r.SetBody(log.StringValue("chat.request.completed"))
+	r.SetBody(log.StringValue(logType))
 	r.AddAttributes(
 		log.String("token_id", rec.TokenID),
 		log.String("session_id", rec.SessionID),

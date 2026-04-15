@@ -77,6 +77,7 @@ func (app *App) chatSSE(c *gin.Context) {
 		traceID := turnSpan.SpanContext().TraceID().String()
 
 		telemetry.EmitChatLog(ctx, telemetry.ChatLogRecord{
+			LogType:     "metrics_log",
 			TokenID:     tokenStr,
 			SessionID:   logSession,
 			DurationMs:  durationMs,
