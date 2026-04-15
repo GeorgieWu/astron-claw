@@ -594,7 +594,9 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 	}
 
 	// Ping/pong
-	if msgType, _ := msg["type"].(string); msgType == "ping" {
+	msgType := ""
+	if t, _ := msg["type"].(string); t == "ping" {
+		msgType = "ping"
 		if connI, ok := b.bots.Load(token); ok {
 			conn := connI.(*BotConn)
 			conn.WriteMessage(websocket.TextMessage, []byte("pong"))
@@ -604,6 +606,17 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 
 	method, _ := msg["method"].(string)
 	params, _ := msg["params"].(map[string]interface{})
+
+	// Determine message_type for span attribute
+	if method != "" {
+		msgType = "notification"
+	} else if _, hasID := msg["id"]; hasID {
+		if _, hasResult := msg["result"]; hasResult {
+			msgType = "result"
+		} else if _, hasErr := msg["error"]; hasErr {
+			msgType = "error"
+		}
+	}
 
 	// Extract sessionId early for trace context restoration
 	var topSessionID string
@@ -642,6 +655,7 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 		msgSpan.SetAttributes(
 			attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)),
 			attribute.String("astron.method", method),
+			attribute.String("astron.message_type", msgType),
 		)
 		if sessionID != "" {
 			msgSpan.SetAttributes(attribute.String("astron.session_id", pkg.SafePrefix(sessionID, 8)))
@@ -750,9 +764,12 @@ func (b *ConnectionBridge) cleanupSharedBotState(ctx context.Context, token stri
 func (b *ConnectionBridge) sendToSession(ctx context.Context, token, sessionID string, event map[string]interface{}) {
 	ctx, span := bridgeTracer.Start(ctx, "chat.message.deliver", trace.WithSpanKind(trace.SpanKindProducer))
 	defer span.End()
+
+	eventType, _ := event["type"].(string)
 	span.SetAttributes(
 		attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)),
 		attribute.String("astron.session_id", pkg.SafePrefix(sessionID, 8)),
+		attribute.String("astron.event_type", eventType),
 	)
 
 	if b.shuttingDown.Load() {
@@ -760,7 +777,9 @@ func (b *ConnectionBridge) sendToSession(ctx context.Context, token, sessionID s
 	}
 	inbox := ChatInboxPrefix + token + ":" + sessionID
 	exists, _ := b.rdb.Exists(ctx, inbox).Result()
-	if exists == 0 {
+	inboxExists := exists > 0
+	span.SetAttributes(attribute.Bool("astron.inbox_exists", inboxExists))
+	if !inboxExists {
 		log.Debug().Str("token", pkg.SafePrefix(token, 10)).Str("session", pkg.SafePrefix(sessionID, 8)).
 			Msg("No active SSE consumer, skipping event")
 		return

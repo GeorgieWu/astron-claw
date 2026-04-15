@@ -139,7 +139,7 @@ func (app *App) chatSSE(c *gin.Context) {
 		_, availSpan := sseTracer.Start(ctx, "chat.bot.availability_check",
 			trace.WithSpanKind(trace.SpanKindInternal))
 		connected := app.Bridge.IsBotConnected(ctx, tokenStr)
-		availSpan.SetAttributes(attribute.Bool("astron.bot_connected", connected))
+		availSpan.SetAttributes(attribute.Bool("astron.bot_available", connected))
 		availSpan.End()
 		if !connected {
 			log.Warn().Str("token", tp).Msg("SSE: no bot connected")
@@ -214,7 +214,11 @@ func (app *App) chatSSE(c *gin.Context) {
 			model.ErrorResponse(c, model.ErrChatSendFailed)
 			return
 		}
-		dispatchSpan.SetAttributes(attribute.String("astron.turn_id", reqID))
+		dispatchSpan.SetAttributes(
+			attribute.String("astron.turn_id", reqID),
+			attribute.Int("astron.message_size", len(content)),
+			attribute.Int("astron.media_count", len(mediaURLs)),
+		)
 		dispatchSpan.End()
 	}
 
