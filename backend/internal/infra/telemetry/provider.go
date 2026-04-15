@@ -6,9 +6,12 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	otellog "go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -20,6 +23,7 @@ import (
 var (
 	meterProvider  *sdkmetric.MeterProvider
 	tracerProvider *sdktrace.TracerProvider
+	loggerProvider *sdklog.LoggerProvider
 )
 
 // Init initializes OTel MeterProvider and/or TracerProvider with OTLP gRPC exporter.
@@ -42,6 +46,12 @@ func Init(ctx context.Context, otlpCfg config.OtlpConfig) error {
 
 	if otlpCfg.TracesEnabled {
 		if err := initTraces(ctx, otlpCfg, res); err != nil {
+			return err
+		}
+	}
+
+	if otlpCfg.LogsEnabled {
+		if err := initLogs(ctx, otlpCfg, res); err != nil {
 			return err
 		}
 	}
@@ -118,6 +128,13 @@ func Shutdown() {
 		tracerProvider = nil
 	}
 
+	if loggerProvider != nil {
+		if err := loggerProvider.Shutdown(ctx); err != nil {
+			log.Error().Err(err).Msg("OTLP logs shutdown error")
+		}
+		loggerProvider = nil
+	}
+
 	log.Info().Msg("OTLP telemetry shut down")
 }
 
@@ -145,6 +162,33 @@ func initTraces(ctx context.Context, otlpCfg config.OtlpConfig, res *resource.Re
 		Str("service", otlpCfg.ServiceName).
 		Str("endpoint", otlpCfg.Endpoint).
 		Msg("OTLP traces exporter initialised (gRPC)")
+
+	return nil
+}
+
+func initLogs(ctx context.Context, otlpCfg config.OtlpConfig, res *resource.Resource) error {
+	opts := []otlploggrpc.Option{
+		otlploggrpc.WithEndpoint(otlpCfg.Endpoint),
+	}
+	if otlpCfg.Insecure {
+		opts = append(opts, otlploggrpc.WithInsecure())
+	}
+
+	exporter, err := otlploggrpc.New(ctx, opts...)
+	if err != nil {
+		return err
+	}
+
+	loggerProvider = sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
+		sdklog.WithResource(res),
+	)
+	otellog.SetLoggerProvider(loggerProvider)
+
+	log.Info().
+		Str("service", otlpCfg.ServiceName).
+		Str("endpoint", otlpCfg.Endpoint).
+		Msg("OTLP logs exporter initialised (gRPC)")
 
 	return nil
 }

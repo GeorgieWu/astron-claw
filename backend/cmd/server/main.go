@@ -44,6 +44,7 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialise OTLP telemetry")
 	}
 	telemetry.EnsureInstruments()
+	telemetry.EnsureLogger()
 
 	// Run database migrations
 	if err := infra.RunMigrations(ctx, cfg.MySQL, rdb); err != nil {

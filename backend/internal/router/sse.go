@@ -51,6 +51,43 @@ func (app *App) chatSSE(c *gin.Context) {
 		trace.WithSpanKind(trace.SpanKindServer))
 	defer turnSpan.End()
 
+	// Log state variables
+	var (
+		logSession string
+		logTTFBMs  float64
+		closeReason string
+	)
+
+	// Emit OTel log on every return path
+	defer func() {
+		logCode := 0
+		if raw, exists := c.Get("metrics_code"); exists {
+			if codeStr, ok := raw.(string); ok {
+				logCode, _ = strconv.Atoi(codeStr)
+			}
+		}
+
+		var durationMs float64
+		if raw, exists := c.Get("metrics_start"); exists {
+			if startTime, ok := raw.(time.Time); ok {
+				durationMs = float64(time.Since(startTime).Milliseconds())
+			}
+		}
+
+		traceID := turnSpan.SpanContext().TraceID().String()
+
+		telemetry.EmitChatLog(ctx, telemetry.ChatLogRecord{
+			TokenID:     tokenStr,
+			SessionID:   logSession,
+			DurationMs:  durationMs,
+			TTFBMs:      logTTFBMs,
+			Code:        logCode,
+			CloseReason: closeReason,
+			PodIP:       c.GetString("metrics_ip"),
+			TraceID:     traceID,
+		})
+	}()
+
 	var body ChatRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.Set("metrics_code", strconv.Itoa(model.CodeChatInvalidReq))
@@ -152,6 +189,9 @@ func (app *App) chatSSE(c *gin.Context) {
 		resolveSpan.End()
 	}
 
+	// Session resolved successfully
+	logSession = sessionID
+
 	// Clear stale events and reset consumer group
 	inbox := service.ChatInboxPrefix + tokenStr + ":" + sessionID
 	app.Queue.Purge(ctx, inbox)
@@ -217,7 +257,7 @@ func (app *App) chatSSE(c *gin.Context) {
 
 	// Track active stream
 	streamStart := time.Now()
-	closeReason := "done"
+	closeReason = "done"
 	streamCode := "0"
 	funcPath := c.GetString("metrics_func")
 	podIP := c.GetString("metrics_ip")
@@ -281,6 +321,13 @@ func (app *App) chatSSE(c *gin.Context) {
 		return
 	}
 	flusher.Flush()
+
+	// Record TTFB after first SSE event written
+	if raw, exists := c.Get("metrics_start"); exists {
+		if startTime, ok := raw.(time.Time); ok {
+			logTTFBMs = float64(time.Since(startTime).Milliseconds())
+		}
+	}
 
 	lastHeartbeat := time.Now()
 	hasChunks := false
