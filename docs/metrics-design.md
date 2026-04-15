@@ -27,30 +27,30 @@
 
 ### 2.2 维度说明
 
-#### `func` — 接口路径
+#### `func` — 接口标识
 
-取值为 Gin 路由的完整路径（含路径参数占位符），例如：
+取值为 Gin handler 函数名（通过 `c.HandlerName()` 提取末段并去除 `-fm` 后缀），例如：
 
 | 路由 | `func` 取值 |
 |------|-------------|
-| `GET /api/health` | `/api/health` |
-| `POST /api/token` | `/api/token` |
-| `POST /api/token/validate` | `/api/token/validate` |
-| `POST /api/media/upload` | `/api/media/upload` |
-| `POST /bridge/chat` | `/bridge/chat` |
-| `GET /bridge/chat/sessions` | `/bridge/chat/sessions` |
-| `POST /bridge/chat/sessions` | `/bridge/chat/sessions` |
-| `GET /api/admin/tokens` | `/api/admin/tokens` |
-| `POST /api/admin/tokens` | `/api/admin/tokens` |
-| `PATCH /api/admin/tokens/:token` | `/api/admin/tokens/:token` |
-| `DELETE /api/admin/tokens/:token` | `/api/admin/tokens/:token` |
-| `POST /api/admin/auth/setup` | `/api/admin/auth/setup` |
-| `POST /api/admin/auth/login` | `/api/admin/auth/login` |
-| `POST /api/admin/auth/logout` | `/api/admin/auth/logout` |
-| `GET /api/admin/auth/status` | `/api/admin/auth/status` |
-| `POST /api/admin/cleanup` | `/api/admin/cleanup` |
+| `GET /api/health` | `healthCheck` |
+| `POST /api/token` | `createToken` |
+| `POST /api/token/validate` | `validateToken` |
+| `POST /api/media/upload` | `uploadMedia` |
+| `POST /bridge/chat` | `chatSSE` |
+| `GET /bridge/chat/sessions` | `listSessions` |
+| `POST /bridge/chat/sessions` | `createSession` |
+| `GET /api/admin/tokens` | `listTokens` |
+| `POST /api/admin/tokens` | `adminCreateToken` |
+| `PATCH /api/admin/tokens/:token` | `adminUpdateToken` |
+| `DELETE /api/admin/tokens/:token` | `adminDeleteToken` |
+| `POST /api/admin/auth/setup` | `adminAuthSetup` |
+| `POST /api/admin/auth/login` | `adminAuthLogin` |
+| `POST /api/admin/auth/logout` | `adminAuthLogout` |
+| `GET /api/admin/auth/status` | `adminAuthStatus` |
+| `POST /api/admin/cleanup` | `adminCleanup` |
 
-**实现方式**：通过 `c.FullPath()` 获取（返回带占位符的路由模板，如 `/api/admin/tokens/:token`）
+**实现方式**：通过 `extractFuncName(c.HandlerName())` 提取，从完整的 handler 名称（如 `astron-claw/backend/internal/router.(*App).chatSSE-fm`）中提取最后一段函数名并去除 Gin 的 `-fm` 后缀。
 
 #### `ip` — 服务端 Pod IP
 
@@ -173,19 +173,18 @@ HTTP Request
 ```go
 func MetricsMiddleware(podIP string) gin.HandlerFunc {
     return func(c *gin.Context) {
-        funcPath := c.FullPath()
-        
         // 跳过 WebSocket 接口（升级后是长连接，HTTP metrics 无意义）
-        if funcPath == "/bridge/bot" {
+        if c.FullPath() == "/bridge/bot" {
             c.Next()
             return
         }
         
         start := time.Now()
+        funcName := extractFuncName(c.HandlerName())
         
         // 在 context 中注入 metrics 上下文，供 handler 使用
         c.Set("metrics_start", start)
-        c.Set("metrics_func", funcPath)
+        c.Set("metrics_func", funcName)
         c.Set("metrics_ip", podIP)
         
         // 默认 code=0（成功）
@@ -205,7 +204,7 @@ func MetricsMiddleware(podIP string) gin.HandlerFunc {
             // 记录 requests
             telemetry.ChatRequestTotal.Add(c.Request.Context(), 1,
                 metric.WithAttributes(
-                    attribute.String("func", funcPath),
+                    attribute.String("func", funcName),
                     attribute.String("ip", podIP),
                     attribute.String("code", code),
                 ))
@@ -214,7 +213,7 @@ func MetricsMiddleware(podIP string) gin.HandlerFunc {
             if _, isSSE := c.Get("metrics_sse_stream"); !isSSE {
                 telemetry.ChatRequestDuration.Record(c.Request.Context(), duration,
                     metric.WithAttributes(
-                        attribute.String("func", funcPath),
+                        attribute.String("func", funcName),
                         attribute.String("ip", podIP),
                         attribute.String("code", code),
                     ))
@@ -223,6 +222,17 @@ func MetricsMiddleware(podIP string) gin.HandlerFunc {
         
         c.Next()
     }
+}
+
+func extractFuncName(full string) string {
+    // 从完整的 handler 名称提取函数名
+    // 例如: "astron-claw/backend/internal/router.(*App).chatSSE-fm" → "chatSSE"
+    if i := strings.LastIndex(full, "."); i >= 0 {
+        name := full[i+1:]
+        name = strings.TrimSuffix(name, "-fm")
+        return name
+    }
+    return full
 }
 
 func inferCodeFromStatus(status int) string {

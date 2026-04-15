@@ -239,28 +239,45 @@ HTTP POST（otelgin 自动）
 
 直接复用 `bridge.go:529` 生成的 `requestID`（`req_` + uuid 前12位），作为 `astron.turn_id` 属性。
 
-**2.2 `chat.cancel` context 传递**
+**2.2 `chat.turn` SpanKind**
 
-当前 `sse.go:246` 使用 `context.Background()`，需要在 goroutine 前派生 context：
+使用 `trace.SpanKindInternal`，因为 `chat.turn` 是业务主 Span，不是传输层入口（传输层入口由 otelgin 自动创建的 `HTTP POST` span 表示）。
+
+**2.3 `chat.bot.dispatch` SpanKind**
+
+使用 `trace.SpanKindProducer`，因为这是向异步队列（Worker Inbox）发布消息的操作。
+
+**2.4 `chat.cancel` context 传递**
+
+SSE 流中有两个 client_disconnect 路径，都需要正确传递 trace context 并创建 `chat.cancel` span：
 
 ```go
-// sse.go:243-246 修改前
-select {
+// 第一个路径 (sse.go:347-357)
 case <-c.Request.Context().Done():
     closeReason = "client_disconnect"
-    go app.Bridge.SendCancelToBot(context.Background(), tokenStr, sessionID)
+    cancelCtx := trace.ContextWithSpan(context.Background(), trace.SpanFromContext(ctx))
+    go func() {
+        _, cancelSpan := sseTracer.Start(cancelCtx, "chat.cancel",
+            trace.WithSpanKind(trace.SpanKindInternal))
+        defer cancelSpan.End()
+        app.Bridge.SendCancelToBot(cancelCtx, tokenStr, sessionID)
+    }()
     return
 
-// 修改后
+// 第二个路径 (sse.go:403-411) - 同样处理
 case <-c.Request.Context().Done():
     closeReason = "client_disconnect"
-    // 从当前 span 派生 context，保持链路完整
     cancelCtx := trace.ContextWithSpan(context.Background(), trace.SpanFromContext(ctx))
-    go app.Bridge.SendCancelToBot(cancelCtx, tokenStr, sessionID)
+    go func() {
+        _, cancelSpan := sseTracer.Start(cancelCtx, "chat.cancel",
+            trace.WithSpanKind(trace.SpanKindInternal))
+        defer cancelSpan.End()
+        app.Bridge.SendCancelToBot(cancelCtx, tokenStr, sessionID)
+    }()
     return
 ```
 
-**2.3 关键属性（使用 `astron.` 前缀）**
+**2.5 关键属性（使用 `astron.` 前缀）**
 
 ```go
 // chat.turn

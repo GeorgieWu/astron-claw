@@ -48,7 +48,7 @@ func (app *App) chatSSE(c *gin.Context) {
 	tp := telemetry.TokenPrefix(tokenStr)
 
 	ctx, turnSpan := sseTracer.Start(c.Request.Context(), "chat.turn",
-		trace.WithSpanKind(trace.SpanKindServer))
+		trace.WithSpanKind(trace.SpanKindInternal))
 	defer turnSpan.End()
 
 	// Log state variables
@@ -202,7 +202,7 @@ func (app *App) chatSSE(c *gin.Context) {
 	var reqID string
 	{
 		_, dispatchSpan := sseTracer.Start(ctx, "chat.bot.dispatch",
-			trace.WithSpanKind(trace.SpanKindInternal))
+			trace.WithSpanKind(trace.SpanKindProducer))
 		var err error
 		reqID, err = app.Bridge.SendToBot(ctx, tokenStr, content, mediaURLs, sessionID)
 		if err != nil {
@@ -402,7 +402,13 @@ func (app *App) chatSSE(c *gin.Context) {
 			select {
 			case <-c.Request.Context().Done():
 				closeReason = "client_disconnect"
-				go app.Bridge.SendCancelToBot(context.Background(), tokenStr, sessionID)
+				cancelCtx := trace.ContextWithSpan(context.Background(), trace.SpanFromContext(ctx))
+				go func() {
+					_, cancelSpan := sseTracer.Start(cancelCtx, "chat.cancel",
+						trace.WithSpanKind(trace.SpanKindInternal))
+					defer cancelSpan.End()
+					app.Bridge.SendCancelToBot(cancelCtx, tokenStr, sessionID)
+				}()
 				return
 			case <-botDisconnectC:
 				closeReason = "bot_disconnect"
