@@ -17,6 +17,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
@@ -604,19 +605,36 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 	method, _ := msg["method"].(string)
 	params, _ := msg["params"].(map[string]interface{})
 
+	// Extract sessionId early for trace context restoration
+	var topSessionID string
 	if method != "" {
-		chatEvent := TranslateBotEvent(method, params)
-		sessionID, _ := getNestedString(params, "sessionId")
-
-		// Restore trace context from Redis (best-effort)
-		if sessionID != "" {
-			if raw, err := b.rdb.Get(context.Background(), TraceCtxPrefix+sessionID).Result(); err == nil {
-				var m map[string]string
-				if json.Unmarshal([]byte(raw), &m) == nil {
-					ctx = otel.GetTextMapPropagator().Extract(context.Background(), propagation.MapCarrier(m))
+		topSessionID, _ = getNestedString(params, "sessionId")
+	} else if _, hasID := msg["id"]; hasID {
+		if errObj, hasErr := msg["error"]; hasErr {
+			if errMap, ok := errObj.(map[string]interface{}); ok && errMap != nil {
+				if dataObj, ok := errMap["data"].(map[string]interface{}); ok {
+					topSessionID, _ = dataObj["sessionId"].(string)
 				}
 			}
 		}
+		if topSessionID == "" {
+			topSessionID, _ = msg["sessionId"].(string)
+		}
+	}
+
+	// Restore trace context from Redis (best-effort, covers all paths)
+	if topSessionID != "" {
+		if raw, err := b.rdb.Get(context.Background(), TraceCtxPrefix+topSessionID).Result(); err == nil {
+			var m map[string]string
+			if json.Unmarshal([]byte(raw), &m) == nil {
+				ctx = otel.GetTextMapPropagator().Extract(context.Background(), propagation.MapCarrier(m))
+			}
+		}
+	}
+
+	if method != "" {
+		chatEvent := TranslateBotEvent(method, params)
+		sessionID, _ := getNestedString(params, "sessionId")
 
 		// Create bot.message.receive span
 		ctx, msgSpan := bridgeTracer.Start(ctx, "bot.message.receive",
@@ -730,7 +748,7 @@ func (b *ConnectionBridge) cleanupSharedBotState(ctx context.Context, token stri
 }
 
 func (b *ConnectionBridge) sendToSession(ctx context.Context, token, sessionID string, event map[string]interface{}) {
-	ctx, span := bridgeTracer.Start(ctx, "chat.message.deliver", trace.WithSpanKind(trace.SpanKindInternal))
+	ctx, span := bridgeTracer.Start(ctx, "chat.message.deliver", trace.WithSpanKind(trace.SpanKindProducer))
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)),
@@ -749,6 +767,8 @@ func (b *ConnectionBridge) sendToSession(ctx context.Context, token, sessionID s
 	}
 	data, _ := json.Marshal(event)
 	if _, err := b.queue.Publish(ctx, inbox, string(data)); err != nil {
+		span.SetStatus(codes.Error, "publish to chat inbox failed")
+		span.RecordError(err)
 		if !b.shuttingDown.Load() {
 			log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Str("session", pkg.SafePrefix(sessionID, 8)).
 				Msg("Failed to send to session inbox")
