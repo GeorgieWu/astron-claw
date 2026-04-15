@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,19 +17,18 @@ import (
 // Must be registered before gin.Recovery() to capture panic-induced errors.
 func MetricsMiddleware(podIP string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		funcPath := c.FullPath()
-
 		// Skip WebSocket endpoint (long-lived connection, HTTP metrics don't apply)
-		if funcPath == "/bridge/bot" {
+		if c.FullPath() == "/bridge/bot" {
 			c.Next()
 			return
 		}
 
 		start := time.Now()
+		funcName := extractFuncName(c.HandlerName())
 
 		// Inject metrics context for handlers
 		c.Set("metrics_start", start)
-		c.Set("metrics_func", funcPath)
+		c.Set("metrics_func", funcName)
 		c.Set("metrics_ip", podIP)
 
 		// Default code=0 (success)
@@ -48,7 +48,7 @@ func MetricsMiddleware(podIP string) gin.HandlerFunc {
 			// Record requests counter
 			telemetry.ChatRequestTotal.Add(c.Request.Context(), 1,
 				metric.WithAttributes(
-					attribute.String("func", funcPath),
+					attribute.String("func", funcName),
 					attribute.String("ip", podIP),
 					attribute.String("code", code),
 				))
@@ -57,7 +57,7 @@ func MetricsMiddleware(podIP string) gin.HandlerFunc {
 			if _, isSSE := c.Get("metrics_sse_stream"); !isSSE {
 				telemetry.ChatRequestDuration.Record(c.Request.Context(), duration,
 					metric.WithAttributes(
-						attribute.String("func", funcPath),
+						attribute.String("func", funcName),
 						attribute.String("ip", podIP),
 						attribute.String("code", code),
 					))
@@ -89,4 +89,17 @@ func inferCodeFromStatus(status int) string {
 func MetricsErrorResponse(c *gin.Context, err model.AppError, detail ...string) {
 	c.Set("metrics_code", strconv.Itoa(err.Code))
 	model.ErrorResponse(c, err, detail...)
+}
+
+// extractFuncName extracts the short function name from a fully qualified handler name.
+// e.g. "astron-claw/backend/internal/router.(*App).chatSSE-fm" → "chatSSE"
+func extractFuncName(full string) string {
+	// Take everything after the last dot
+	if i := strings.LastIndex(full, "."); i >= 0 {
+		name := full[i+1:]
+		// Strip Gin's "-fm" suffix for method values
+		name = strings.TrimSuffix(name, "-fm")
+		return name
+	}
+	return full
 }
