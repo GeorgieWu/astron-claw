@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -231,6 +232,9 @@ func (app *App) chatSSE(c *gin.Context) {
 		attribute.Bool("astron.is_new_session", isNewSession),
 	)
 
+	// Record user input content on turn span
+	app.storeSpanContent(content, turnSpan, "astron.user_input")
+
 	// Check Flusher support BEFORE marking as SSE stream
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
@@ -254,9 +258,13 @@ func (app *App) chatSSE(c *gin.Context) {
 	podIP := c.GetString("metrics_ip")
 
 	// Start response stream span
+	var replyBuf strings.Builder
 	_, streamSpan := sseTracer.Start(ctx, "chat.response.stream",
 		trace.WithSpanKind(trace.SpanKindInternal))
 	defer func() {
+		if replyBuf.Len() > 0 {
+			app.storeSpanContent(replyBuf.String(), streamSpan, "astron.bot_reply")
+		}
 		streamSpan.SetAttributes(attribute.String("astron.close_reason", closeReason))
 		streamSpan.End()
 	}()
@@ -460,11 +468,15 @@ func (app *App) chatSSE(c *gin.Context) {
 
 		if eventType == "chunk" {
 			hasChunks = true
+			if chunkContent, ok := eventData["content"].(string); ok {
+				replyBuf.WriteString(chunkContent)
+			}
 		}
 
 		// Auto-inject chunk before done if no preceding chunks
 		if eventType == "done" && !hasChunks {
 			if contentStr, ok := eventData["content"].(string); ok && contentStr != "" {
+				replyBuf.WriteString(contentStr)
 				chunkEvent := pkg.FormatSSEEvent("chunk", map[string]interface{}{
 					"content": contentStr,
 				})
@@ -539,4 +551,21 @@ func (app *App) createSession(c *gin.Context) {
 		"sessionNumber": sessionNumber,
 		"sessions":      sessionList,
 	})
+}
+
+// storeSpanContent sets a span attribute with content inline (<=1024 bytes)
+// or uploads to S3 and stores the URL for larger content.
+func (app *App) storeSpanContent(content string, span trace.Span, attrKey string) {
+	if len(content) <= 1024 {
+		span.SetAttributes(attribute.String(attrKey, content))
+		return
+	}
+	key := "otel/" + uuid.New().String() + ".txt"
+	url, err := app.Storage.PutObject(key, strings.NewReader(content), "text/plain", int64(len(content)))
+	if err != nil {
+		log.Warn().Err(err).Str("key", key).Msg("S3 upload failed for span content, truncating")
+		span.SetAttributes(attribute.String(attrKey, content[:1024]+"...(truncated)"))
+		return
+	}
+	span.SetAttributes(attribute.String(attrKey, url))
 }
