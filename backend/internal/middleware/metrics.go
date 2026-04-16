@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -24,7 +23,10 @@ func MetricsMiddleware(podIP string) gin.HandlerFunc {
 		}
 
 		start := time.Now()
-		funcName := extractFuncName(c.HandlerName())
+		funcName := c.FullPath()
+		if funcName == "" {
+			funcName = "unknown"
+		}
 
 		// Inject metrics context for handlers
 		c.Set("metrics_start", start)
@@ -89,17 +91,4 @@ func inferCodeFromStatus(status int) string {
 func MetricsErrorResponse(c *gin.Context, err model.AppError, detail ...string) {
 	c.Set("metrics_code", strconv.Itoa(err.Code))
 	model.ErrorResponse(c, err, detail...)
-}
-
-// extractFuncName extracts the short function name from a fully qualified handler name.
-// e.g. "astron-claw/backend/internal/router.(*App).chatSSE-fm" → "chatSSE"
-func extractFuncName(full string) string {
-	// Take everything after the last dot
-	if i := strings.LastIndex(full, "."); i >= 0 {
-		name := full[i+1:]
-		// Strip Gin's "-fm" suffix for method values
-		name = strings.TrimSuffix(name, "-fm")
-		return name
-	}
-	return full
 }

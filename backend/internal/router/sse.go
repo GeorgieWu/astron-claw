@@ -86,7 +86,7 @@ func (app *App) chatSSE(c *gin.Context) {
 			Ret:       logCode,
 			IP:        c.GetString("metrics_ip"),
 			TraceID:   traceID,
-			Func:      "chatSSE",
+			Func:      c.GetString("metrics_func"),
 		})
 	}()
 
