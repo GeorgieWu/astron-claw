@@ -77,15 +77,15 @@ func (app *App) chatSSE(c *gin.Context) {
 		traceID := turnSpan.SpanContext().TraceID().String()
 
 		telemetry.EmitChatLog(ctx, telemetry.ChatLogRecord{
-			LogType:     "metrics_log",
-			TokenID:     tokenStr,
-			SessionID:   logSession,
-			DurationMs:  durationMs,
-			TTFBMs:      logTTFBMs,
-			Code:        logCode,
-			CloseReason: closeReason,
-			PodIP:       c.GetString("metrics_ip"),
-			TraceID:     traceID,
+			LogType:   "metrics_log",
+			AppID:     tokenStr,
+			SessionID: logSession,
+			FALR:      durationMs,
+			FAFR:      logTTFBMs,
+			Ret:       logCode,
+			IP:        c.GetString("metrics_ip"),
+			TraceID:   traceID,
+			Func:      "chatSSE",
 		})
 	}()
 
@@ -243,20 +243,6 @@ func (app *App) chatSSE(c *gin.Context) {
 	// Mark as SSE stream to prevent middleware from recording request.duration
 	c.Set("metrics_sse_stream", true)
 
-	// Record first-byte latency (TTFB) before entering stream
-	if metricsStart, exists := c.Get("metrics_start"); exists {
-		if startTime, ok := metricsStart.(time.Time); ok {
-			funcPath := c.GetString("metrics_func")
-			podIP := c.GetString("metrics_ip")
-			telemetry.ChatRequestDuration.Record(ctx, time.Since(startTime).Seconds(),
-				metric.WithAttributes(
-					attribute.String("func", funcPath),
-					attribute.String("ip", podIP),
-					attribute.String("code", "0"),
-				))
-		}
-	}
-
 	log.Info().Str("req", reqID).Str("session", pkg.SafePrefix(sessionID, 8)).Str("token", tp).
 		Msg("SSE: chat started")
 
@@ -282,12 +268,6 @@ func (app *App) chatSSE(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 
-	telemetry.ChatActiveStreams.Add(ctx, 1,
-		metric.WithAttributes(
-			attribute.String("func", funcPath),
-			attribute.String("ip", podIP),
-		))
-
 	// 注册SSE连接到bot状态监控器
 	var sseConn *service.SSEConnection
 	if app.BotStatusMonitor != nil {
@@ -296,11 +276,6 @@ func (app *App) chatSSE(c *gin.Context) {
 	}
 
 	defer func() {
-		telemetry.ChatActiveStreams.Add(context.Background(), -1,
-			metric.WithAttributes(
-				attribute.String("func", funcPath),
-				attribute.String("ip", podIP),
-			))
 		streamDuration := time.Since(streamStart).Seconds()
 		telemetry.ChatStreamDuration.Record(context.Background(), streamDuration,
 			metric.WithAttributes(
@@ -336,6 +311,7 @@ func (app *App) chatSSE(c *gin.Context) {
 
 	lastHeartbeat := time.Now()
 	hasChunks := false
+	firstResult := true
 
 	// 准备 bot 断开监听 channel
 	var botDisconnectC <-chan struct{}
@@ -439,6 +415,21 @@ func (app *App) chatSSE(c *gin.Context) {
 		}
 
 		_ = app.Queue.Ack(context.Background(), inbox, "sse", result.ID)
+
+		// Record time-to-first-redis-result
+		if firstResult {
+			firstResult = false
+			if metricsStart, exists := c.Get("metrics_start"); exists {
+				if startTime, ok := metricsStart.(time.Time); ok {
+					telemetry.ChatRequestDuration.Record(ctx, time.Since(startTime).Seconds(),
+						metric.WithAttributes(
+							attribute.String("func", funcPath),
+							attribute.String("ip", podIP),
+							attribute.String("code", "0"),
+						))
+				}
+			}
+		}
 
 		// Reset deadline on activity
 		deadline = time.Now().Add(sseTimeout * time.Second)

@@ -16,7 +16,6 @@ var (
 	ChatRequestTotal    metric.Int64Counter
 	ChatRequestDuration metric.Float64Histogram
 	ChatStreamDuration  metric.Float64Histogram
-	ChatActiveStreams   metric.Int64UpDownCounter
 )
 
 func init() {
@@ -38,7 +37,7 @@ func EnsureInstruments() {
 
 	ChatRequestDuration, err = meter.Float64Histogram(
 		"bridge.chat.request.duration",
-		metric.WithDescription("HTTP request duration (all endpoints)"),
+		metric.WithDescription("Time to first Redis result for SSE, or full duration for other endpoints"),
 		metric.WithUnit("s"),
 	)
 	if err != nil {
@@ -52,14 +51,6 @@ func EnsureInstruments() {
 	)
 	if err != nil {
 		ChatStreamDuration, _ = meter.Float64Histogram("bridge.chat.stream.duration")
-	}
-
-	ChatActiveStreams, err = meter.Int64UpDownCounter(
-		"bridge.chat.active_streams",
-		metric.WithDescription("Current active SSE stream count (/bridge/chat only)"),
-	)
-	if err != nil {
-		ChatActiveStreams, _ = meter.Int64UpDownCounter("bridge.chat.active_streams")
 	}
 }
 
