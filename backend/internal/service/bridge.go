@@ -647,6 +647,7 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 	if method != "" {
 		chatEvent := TranslateBotEvent(method, params)
 		sessionID, _ := getNestedString(params, "sessionId")
+		requestID, _ := getNestedString(params, "requestId")
 
 		// Create bot.message.receive span
 		ctx, msgSpan := bridgeTracer.Start(ctx, "bot.message.receive",
@@ -658,6 +659,9 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 		)
 		if sessionID != "" {
 			msgSpan.SetAttributes(attribute.String("astron.session_id", sessionID))
+		}
+		if requestID != "" {
+			msgSpan.SetAttributes(attribute.String("astron.turn_id", requestID))
 		}
 
 		if sessionID == "" {

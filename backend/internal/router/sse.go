@@ -50,7 +50,6 @@ func (app *App) chatSSE(c *gin.Context) {
 
 	ctx, turnSpan := sseTracer.Start(c.Request.Context(), "chat.turn",
 		trace.WithSpanKind(trace.SpanKindInternal))
-	defer turnSpan.End()
 
 	// Log state variables
 	var (
@@ -58,6 +57,13 @@ func (app *App) chatSSE(c *gin.Context) {
 		logTTFBMs  float64
 		closeReason string
 	)
+
+	defer func() {
+		if closeReason != "" {
+			turnSpan.SetAttributes(attribute.String("astron.close_reason", closeReason))
+		}
+		turnSpan.End()
+	}()
 
 	// Emit OTel log on every return path
 	defer func() {
@@ -141,7 +147,10 @@ func (app *App) chatSSE(c *gin.Context) {
 		_, availSpan := sseTracer.Start(ctx, "chat.bot.availability_check",
 			trace.WithSpanKind(trace.SpanKindInternal))
 		connected := app.Bridge.IsBotConnected(ctx, tokenStr)
-		availSpan.SetAttributes(attribute.Bool("astron.bot_available", connected))
+		availSpan.SetAttributes(
+			attribute.String("astron.token_prefix", tp),
+			attribute.Bool("astron.bot_available", connected),
+		)
 		if !connected {
 			availSpan.SetStatus(codes.Error, "no bot connected")
 			availSpan.SetAttributes(attribute.Int("astron.error_code", model.CodeChatNoBot))
@@ -194,6 +203,7 @@ func (app *App) chatSSE(c *gin.Context) {
 			isNewSession = true
 		}
 		resolveSpan.SetAttributes(
+			attribute.String("astron.token_prefix", tp),
 			attribute.String("astron.session_id", sessionID),
 			attribute.Bool("astron.is_new_session", isNewSession),
 		)
@@ -228,6 +238,8 @@ func (app *App) chatSSE(c *gin.Context) {
 			return
 		}
 		dispatchSpan.SetAttributes(
+			attribute.String("astron.token_prefix", tp),
+			attribute.String("astron.session_id", sessionID),
 			attribute.String("astron.turn_id", reqID),
 			attribute.Int("astron.message_size", len(content)),
 			attribute.Int("astron.media_count", len(mediaURLs)),
@@ -277,7 +289,13 @@ func (app *App) chatSSE(c *gin.Context) {
 		if replyBuf.Len() > 0 {
 			app.storeSpanContent(replyBuf.String(), streamSpan, "astron.bot_reply")
 		}
-		streamSpan.SetAttributes(attribute.String("astron.close_reason", closeReason))
+		streamSpan.SetAttributes(
+			attribute.String("astron.token_prefix", tp),
+			attribute.String("astron.session_id", sessionID),
+			attribute.String("astron.turn_id", reqID),
+			attribute.String("astron.close_reason", closeReason),
+			attribute.Int64("astron.stream_duration_ms", time.Since(streamStart).Milliseconds()),
+		)
 		streamSpan.End()
 	}()
 
@@ -355,6 +373,12 @@ func (app *App) chatSSE(c *gin.Context) {
 			go func() {
 				_, cancelSpan := sseTracer.Start(cancelCtx, "chat.cancel",
 					trace.WithSpanKind(trace.SpanKindInternal))
+				cancelSpan.SetAttributes(
+					attribute.String("astron.token_prefix", tp),
+					attribute.String("astron.session_id", sessionID),
+					attribute.String("astron.turn_id", reqID),
+					attribute.String("astron.cancel_reason", "client_disconnect"),
+				)
 				defer cancelSpan.End()
 				app.Bridge.SendCancelToBot(cancelCtx, tokenStr, sessionID)
 			}()
@@ -416,6 +440,12 @@ func (app *App) chatSSE(c *gin.Context) {
 				go func() {
 					_, cancelSpan := sseTracer.Start(cancelCtx, "chat.cancel",
 						trace.WithSpanKind(trace.SpanKindInternal))
+					cancelSpan.SetAttributes(
+						attribute.String("astron.token_prefix", tp),
+						attribute.String("astron.session_id", sessionID),
+						attribute.String("astron.turn_id", reqID),
+						attribute.String("astron.cancel_reason", "client_disconnect"),
+					)
 					defer cancelSpan.End()
 					app.Bridge.SendCancelToBot(cancelCtx, tokenStr, sessionID)
 				}()

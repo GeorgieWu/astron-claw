@@ -90,6 +90,8 @@ func (s *SessionStore) GetSession(ctx context.Context, token, sessionID string) 
 	err := s.db.WithContext(ctx).
 		Where("token = ? AND session_id = ?", token, sessionID).
 		First(&session).Error
+	found := err == nil
+	span.SetAttributes(attribute.Bool("astron.found", found))
 	if err != nil {
 		return "", 0, false
 	}
