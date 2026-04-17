@@ -142,13 +142,17 @@ func (app *App) chatSSE(c *gin.Context) {
 			trace.WithSpanKind(trace.SpanKindInternal))
 		connected := app.Bridge.IsBotConnected(ctx, tokenStr)
 		availSpan.SetAttributes(attribute.Bool("astron.bot_available", connected))
-		availSpan.End()
 		if !connected {
+			availSpan.SetStatus(codes.Error, "no bot connected")
+			availSpan.SetAttributes(attribute.Int("astron.error_code", model.CodeChatNoBot))
+			availSpan.End()
+			turnSpan.SetStatus(codes.Error, "no bot connected")
 			log.Warn().Str("token", tp).Msg("SSE: no bot connected")
 			c.Set("metrics_code", strconv.Itoa(model.CodeChatNoBot))
 			model.ErrorResponse(c, model.ErrChatNoBot)
 			return
 		}
+		availSpan.End()
 	}
 
 	// Resolve session
@@ -161,7 +165,10 @@ func (app *App) chatSSE(c *gin.Context) {
 		if body.SessionID != nil && *body.SessionID != "" {
 			sid, snum, found := app.Bridge.GetSession(resolveCtx, tokenStr, *body.SessionID)
 			if !found {
+				resolveSpan.SetStatus(codes.Error, "session not found")
+				resolveSpan.SetAttributes(attribute.Int("astron.error_code", model.CodeSessionNotFound))
 				resolveSpan.End()
+				turnSpan.SetStatus(codes.Error, "session not found")
 				log.Warn().Str("session", *body.SessionID).Str("token", tp).
 					Msg("SSE: session not found")
 				c.Set("metrics_code", strconv.Itoa(model.CodeSessionNotFound))
@@ -175,8 +182,10 @@ func (app *App) chatSSE(c *gin.Context) {
 			sessionID, sessionNumber, err = app.Bridge.CreateSession(resolveCtx, tokenStr)
 			if err != nil {
 				resolveSpan.SetStatus(codes.Error, "create session failed")
+				resolveSpan.SetAttributes(attribute.Int("astron.error_code", model.CodeSessionCreateFailed))
 				resolveSpan.RecordError(err)
 				resolveSpan.End()
+				turnSpan.SetStatus(codes.Error, "create session failed")
 				log.Error().Err(err).Str("token", tp).Msg("SSE: failed to create session")
 				c.Set("metrics_code", strconv.Itoa(model.CodeSessionCreateFailed))
 				model.ErrorResponse(c, model.ErrSessionCreateFailed)
@@ -209,8 +218,10 @@ func (app *App) chatSSE(c *gin.Context) {
 		reqID, err = app.Bridge.SendToBot(ctx, tokenStr, content, mediaURLs, sessionID)
 		if err != nil {
 			dispatchSpan.SetStatus(codes.Error, "send to bot failed")
+			dispatchSpan.SetAttributes(attribute.Int("astron.error_code", model.CodeChatSendFailed))
 			dispatchSpan.RecordError(err)
 			dispatchSpan.End()
+			turnSpan.SetStatus(codes.Error, "send to bot failed")
 			log.Error().Err(err).Str("token", tp).Msg("SSE: send_to_bot failed")
 			c.Set("metrics_code", strconv.Itoa(model.CodeChatSendFailed))
 			model.ErrorResponse(c, model.ErrChatSendFailed)
@@ -238,6 +249,7 @@ func (app *App) chatSSE(c *gin.Context) {
 	// Check Flusher support BEFORE marking as SSE stream
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
+		turnSpan.SetStatus(codes.Error, "stream unsupported")
 		c.Set("metrics_code", strconv.Itoa(model.CodeChatStreamUnsupported))
 		model.ErrorResponse(c, model.ErrChatStreamUnsupported)
 		return
@@ -306,6 +318,8 @@ func (app *App) chatSSE(c *gin.Context) {
 		closeReason = "write_error"
 		streamCode = strconv.Itoa(model.CodeChatInternalError)
 		c.Set("metrics_code", streamCode)
+		streamSpan.SetStatus(codes.Error, "write error")
+		turnSpan.SetStatus(codes.Error, "write error")
 		return
 	}
 	flusher.Flush()
@@ -349,6 +363,8 @@ func (app *App) chatSSE(c *gin.Context) {
 			closeReason = "bot_disconnect"
 			streamCode = strconv.Itoa(model.CodeChatNoBot)
 			c.Set("metrics_code", streamCode)
+			streamSpan.SetStatus(codes.Error, "bot disconnected")
+			turnSpan.SetStatus(codes.Error, "bot disconnected")
 			log.Info().Str("token", tp).Msg("SSE: bot disconnected")
 			errEvent := pkg.FormatSSEEvent("error", map[string]interface{}{
 				"content": model.ErrChatNoBot.Message,
@@ -364,6 +380,8 @@ func (app *App) chatSSE(c *gin.Context) {
 			closeReason = "timeout"
 			streamCode = strconv.Itoa(model.CodeChatStreamTimeout)
 			c.Set("metrics_code", streamCode)
+			streamSpan.SetStatus(codes.Error, "stream timeout")
+			turnSpan.SetStatus(codes.Error, "stream timeout")
 			errEvent := pkg.FormatSSEEvent("error", map[string]interface{}{
 				"content": model.ErrChatStreamTimeout.Message,
 			})
@@ -378,6 +396,9 @@ func (app *App) chatSSE(c *gin.Context) {
 			closeReason = "error"
 			streamCode = strconv.Itoa(model.CodeChatInternalError)
 			c.Set("metrics_code", streamCode)
+			streamSpan.SetStatus(codes.Error, "consume error")
+			streamSpan.RecordError(err)
+			turnSpan.SetStatus(codes.Error, "consume error")
 			errEvent := pkg.FormatSSEEvent("error", map[string]interface{}{
 				"content": model.ErrChatInternalError.Message,
 			})
@@ -403,6 +424,8 @@ func (app *App) chatSSE(c *gin.Context) {
 				closeReason = "bot_disconnect"
 				streamCode = strconv.Itoa(model.CodeChatNoBot)
 				c.Set("metrics_code", streamCode)
+				streamSpan.SetStatus(codes.Error, "bot disconnected")
+				turnSpan.SetStatus(codes.Error, "bot disconnected")
 				log.Info().Str("token", tp).Msg("SSE: bot disconnected")
 				errEvent := pkg.FormatSSEEvent("error", map[string]interface{}{
 					"content": model.ErrChatNoBot.Message,
@@ -495,6 +518,8 @@ func (app *App) chatSSE(c *gin.Context) {
 				closeReason = "error"
 				streamCode = strconv.Itoa(model.CodeBotUnknownError)
 				c.Set("metrics_code", streamCode)
+				streamSpan.SetStatus(codes.Error, "bot error event")
+				turnSpan.SetStatus(codes.Error, "bot error event")
 			}
 			return
 		}
