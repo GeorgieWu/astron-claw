@@ -10,7 +10,6 @@ import (
 
 	"astron-claw/backend/internal/middleware"
 	"astron-claw/backend/internal/model"
-	"astron-claw/backend/internal/pkg"
 )
 
 func (app *App) listTokens(c *gin.Context) {
@@ -203,7 +202,7 @@ func (app *App) adminCreateToken(c *gin.Context) {
 		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
-	log.Info().Str("token", pkg.SafePrefix(token, 16)).Str("name", body.Name).Msg("Admin created token")
+	log.Info().Str("token", token).Str("name", body.Name).Msg("Admin created token")
 	c.JSON(200, gin.H{"code": 0, "token": token})
 }
 
@@ -216,11 +215,11 @@ func (app *App) adminDeleteToken(c *gin.Context) {
 		return
 	}
 	if err := app.Bridge.RemoveBotSessions(c.Request.Context(), tokenValue); err != nil {
-		log.Error().Err(err).Str("token", pkg.SafePrefix(tokenValue, 16)).Msg("Failed to remove bot sessions")
+		log.Error().Err(err).Str("token", tokenValue).Msg("Failed to remove bot sessions")
 		// Don't fail the delete - token is already removed
 	}
 	middleware.InvalidateTokenCache(c.Request.Context(), app.RDB, tokenValue)
-	log.Info().Str("token", pkg.SafePrefix(tokenValue, 16)).Msg("Admin deleted token")
+	log.Info().Str("token", tokenValue).Msg("Admin deleted token")
 	c.JSON(200, gin.H{"code": 0})
 }
 
@@ -253,7 +252,7 @@ func (app *App) adminUpdateToken(c *gin.Context) {
 		middleware.MetricsErrorResponse(c, model.ErrTokenNotFound)
 		return
 	}
-	log.Info().Str("token", pkg.SafePrefix(tokenValue, 16)).Msg("Admin updated token")
+	log.Info().Str("token", tokenValue).Msg("Admin updated token")
 	c.JSON(200, gin.H{"code": 0})
 }
 

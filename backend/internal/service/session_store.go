@@ -14,7 +14,6 @@ import (
 	"gorm.io/gorm"
 
 	"astron-claw/backend/internal/model"
-	"astron-claw/backend/internal/pkg"
 )
 
 var sessionTracer = otel.Tracer("astron-claw/service/session")
@@ -41,8 +40,8 @@ func (s *SessionStore) CreateSession(ctx context.Context, token, sessionID strin
 	ctx, span := sessionTracer.Start(ctx, "session.create", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)),
-		attribute.String("astron.session_id", pkg.SafePrefix(sessionID, 8)),
+		attribute.String("astron.token_prefix", token),
+		attribute.String("astron.session_id", sessionID),
 	)
 
 	now := time.Now().UTC()
@@ -69,12 +68,12 @@ func (s *SessionStore) CreateSession(ctx context.Context, token, sessionID strin
 func (s *SessionStore) RemoveSessions(ctx context.Context, token string) error {
 	ctx, span := sessionTracer.Start(ctx, "session.remove", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
-	span.SetAttributes(attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)))
+	span.SetAttributes(attribute.String("astron.token_prefix", token))
 	if err := s.db.WithContext(ctx).Where("token = ?", token).Delete(&model.ChatSession{}).Error; err != nil {
 		return fmt.Errorf("delete sessions: %w", err)
 	}
 	if err := s.rdb.Del(ctx, sessionsPrefix+token).Err(); err != nil {
-		log.Warn().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Redis cache delete failed for remove_sessions")
+		log.Warn().Err(err).Str("token", token).Msg("Redis cache delete failed for remove_sessions")
 	}
 	return nil
 }
@@ -84,8 +83,8 @@ func (s *SessionStore) GetSession(ctx context.Context, token, sessionID string) 
 	ctx, span := sessionTracer.Start(ctx, "session.get", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)),
-		attribute.String("astron.session_id", pkg.SafePrefix(sessionID, 8)),
+		attribute.String("astron.token_prefix", token),
+		attribute.String("astron.session_id", sessionID),
 	)
 	var session model.ChatSession
 	err := s.db.WithContext(ctx).
@@ -107,7 +106,7 @@ type SessionInfo struct {
 func (s *SessionStore) GetSessions(ctx context.Context, token string) ([]SessionInfo, error) {
 	ctx, span := sessionTracer.Start(ctx, "session.list", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
-	span.SetAttributes(attribute.String("astron.token_prefix", pkg.SafePrefix(token, 10)))
+	span.SetAttributes(attribute.String("astron.token_prefix", token))
 	// Try Redis first
 	sessionsKey := sessionsPrefix + token
 	cached, err := s.rdb.LRange(ctx, sessionsKey, 0, -1).Result()
@@ -175,7 +174,7 @@ func (s *SessionStore) CleanupOldSessions(ctx context.Context, maxAgeSeconds flo
 	}
 	for token := range affected {
 		if err := s.rdb.Del(ctx, sessionsPrefix+token).Err(); err != nil {
-			log.Warn().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Redis cache invalidation failed during session cleanup")
+			log.Warn().Err(err).Str("token", token).Msg("Redis cache invalidation failed during session cleanup")
 		}
 	}
 
@@ -197,6 +196,6 @@ func (s *SessionStore) repopulateCache(ctx context.Context, token string, rows [
 		pipe.Expire(ctx, sessionsKey, sessionCacheTTL)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
-		log.Warn().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Redis cache repopulate failed")
+		log.Warn().Err(err).Str("token", token).Msg("Redis cache repopulate failed")
 	}
 }

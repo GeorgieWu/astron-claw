@@ -8,7 +8,6 @@ import (
 
 	"astron-claw/backend/internal/middleware"
 	"astron-claw/backend/internal/model"
-	"astron-claw/backend/internal/pkg"
 	"astron-claw/backend/internal/service"
 )
 
@@ -55,7 +54,7 @@ func (app *App) uploadMedia(c *gin.Context) {
 		return
 	}
 
-	log.Info().Str("name", fileName).Int64("size", fileSize).Str("token", pkg.SafePrefix(tokenStr, 10)).
+	log.Info().Str("name", fileName).Int64("size", fileSize).Str("token", tokenStr).
 		Msg("Media uploaded")
 	c.JSON(200, gin.H{
 		"code":        0,

@@ -185,7 +185,7 @@ func (app *App) chatSSE(c *gin.Context) {
 			isNewSession = true
 		}
 		resolveSpan.SetAttributes(
-			attribute.String("astron.session_id", pkg.SafePrefix(sessionID, 8)),
+			attribute.String("astron.session_id", sessionID),
 			attribute.Bool("astron.is_new_session", isNewSession),
 		)
 		resolveSpan.End()
@@ -227,7 +227,7 @@ func (app *App) chatSSE(c *gin.Context) {
 	// Set turn span attributes
 	turnSpan.SetAttributes(
 		attribute.String("astron.token_prefix", tp),
-		attribute.String("astron.session_id", pkg.SafePrefix(sessionID, 8)),
+		attribute.String("astron.session_id", sessionID),
 		attribute.String("astron.turn_id", reqID),
 		attribute.Bool("astron.is_new_session", isNewSession),
 	)
@@ -247,7 +247,7 @@ func (app *App) chatSSE(c *gin.Context) {
 	// Mark as SSE stream to prevent middleware from recording request.duration
 	c.Set("metrics_sse_stream", true)
 
-	log.Info().Str("req", reqID).Str("session", pkg.SafePrefix(sessionID, 8)).Str("token", tp).
+	log.Info().Str("req", reqID).Str("session", sessionID).Str("token", tp).
 		Msg("SSE: chat started")
 
 	// Track active stream

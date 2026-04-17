@@ -13,7 +13,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"astron-claw/backend/internal/model"
-	"astron-claw/backend/internal/pkg"
 	"astron-claw/backend/internal/service"
 )
 
@@ -39,8 +38,7 @@ func (app *App) wsBot(c *gin.Context) {
 		msg := websocket.FormatCloseMessage(model.ErrWSInvalidToken.HTTPStatus, model.ErrWSInvalidToken.Message)
 		_ = conn.WriteMessage(websocket.CloseMessage, msg)
 		conn.Close()
-		tp := pkg.SafePrefix(botToken, 10)
-		log.Warn().Str("token", tp).Msg("Bot connection rejected: invalid token")
+		log.Warn().Str("token", botToken).Msg("Bot connection rejected: invalid token")
 		return
 	}
 
@@ -51,7 +49,6 @@ func (app *App) wsBot(c *gin.Context) {
 	}
 
 	clientAddr := c.ClientIP()
-	tp := pkg.SafePrefix(botToken, 10)
 	botConn := &service.BotConn{
 		Conn:  conn,
 		Token: botToken,
@@ -60,26 +57,26 @@ func (app *App) wsBot(c *gin.Context) {
 	ctx, regSpan := wsTracer.Start(c.Request.Context(), "bot.connection.register",
 		trace.WithSpanKind(trace.SpanKindInternal))
 	regSpan.SetAttributes(
-		attribute.String("astron.token_prefix", tp),
+		attribute.String("astron.token_prefix", botToken),
 		attribute.String("astron.client_addr", clientAddr),
 	)
 
 	if err := app.Bridge.RegisterBot(ctx, botToken, botConn); err != nil {
 		regSpan.End()
-		log.Error().Err(err).Str("token", tp).Msg("Failed to register bot")
+		log.Error().Err(err).Str("token", botToken).Msg("Failed to register bot")
 		conn.Close()
 		return
 	}
 	regSpan.End()
 
-	log.Info().Str("token", tp).Str("from", clientAddr).Msg("Bot connected")
+	log.Info().Str("token", botToken).Str("from", clientAddr).Msg("Bot connected")
 	app.Bridge.NotifyBotConnected(botToken)
 
 	defer func() {
 		unregCtx, unregSpan := wsTracer.Start(context.Background(), "bot.connection.unregister",
 			trace.WithSpanKind(trace.SpanKindInternal))
 		unregSpan.SetAttributes(
-			attribute.String("astron.token_prefix", tp),
+			attribute.String("astron.token_prefix", botToken),
 		)
 		cleanupCtx, cancel := context.WithTimeout(unregCtx, 10*time.Second)
 		defer cancel()
@@ -91,11 +88,11 @@ func (app *App) wsBot(c *gin.Context) {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				log.Info().Str("token", tp).Str("from", clientAddr).Msg("Bot disconnected normally")
+				log.Info().Str("token", botToken).Str("from", clientAddr).Msg("Bot disconnected normally")
 			} else if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				log.Info().Str("token", tp).Str("from", clientAddr).Err(err).Msg("Bot disconnected unexpectedly")
+				log.Info().Str("token", botToken).Str("from", clientAddr).Err(err).Msg("Bot disconnected unexpectedly")
 			} else {
-				log.Error().Err(err).Str("token", tp).Msg("Bot connection error")
+				log.Error().Err(err).Str("token", botToken).Msg("Bot connection error")
 			}
 			return
 		}

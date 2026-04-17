@@ -6,7 +6,6 @@ import (
 
 	"astron-claw/backend/internal/middleware"
 	"astron-claw/backend/internal/model"
-	"astron-claw/backend/internal/pkg"
 )
 
 func (app *App) createToken(c *gin.Context) {
@@ -16,7 +15,7 @@ func (app *App) createToken(c *gin.Context) {
 		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
-	log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Token created via public API")
+	log.Info().Str("token", token).Msg("Token created via public API")
 	c.JSON(200, gin.H{"code": 0, "token": token})
 }
 
@@ -35,8 +34,7 @@ func (app *App) validateToken(c *gin.Context) {
 		botConnected = app.Bridge.IsBotConnected(c.Request.Context(), body.Token)
 	}
 
-	tokenPrefix := pkg.SafePrefix(body.Token, 10)
-	log.Debug().Str("token", tokenPrefix).Bool("valid", valid).Msg("Token validate")
+	log.Debug().Str("token", body.Token).Bool("valid", valid).Msg("Token validate")
 
 	c.JSON(200, gin.H{
 		"code":          0,

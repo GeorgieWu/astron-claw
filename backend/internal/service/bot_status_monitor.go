@@ -8,8 +8,6 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
-
-	"astron-claw/backend/internal/pkg"
 )
 
 const (
@@ -70,8 +68,8 @@ func (m *BotStatusMonitor) RegisterSSEConnection(token, sessionID, inboxKey stri
 	m.sseConnections.Store(inboxKey, conn)
 
 	log.Debug().
-		Str("token", pkg.SafePrefix(token, 10)).
-		Str("session", pkg.SafePrefix(sessionID, 8)).
+		Str("token", token).
+		Str("session", sessionID).
 		Msg("SSE connection registered in monitor")
 
 	return conn
@@ -87,8 +85,8 @@ func (m *BotStatusMonitor) UnregisterSSEConnection(inboxKey string) {
 		token := parts[2]
 		sessionID := parts[3]
 		log.Debug().
-			Str("token", pkg.SafePrefix(token, 10)).
-			Str("session", pkg.SafePrefix(sessionID, 8)).
+			Str("token", token).
+			Str("session", sessionID).
 			Msg("SSE connection unregistered from monitor")
 	}
 }
@@ -160,7 +158,7 @@ func (m *BotStatusMonitor) checkAllBots() {
 		} else if err != nil {
 			// Redis 错误，跳过本次检查，避免误判
 			log.Warn().Err(err).
-				Str("token", pkg.SafePrefix(tokenList[i], 10)).
+				Str("token", tokenList[i]).
 				Msg("Failed to check bot status: Redis error, skipping")
 			continue
 		} else if (now - score) >= botTTL {
@@ -173,7 +171,7 @@ func (m *BotStatusMonitor) checkAllBots() {
 // notifyBotDisconnected 通知所有相关的 SSE 连接 bot 已断开
 func (m *BotStatusMonitor) notifyBotDisconnected(token string) {
 	log.Info().
-		Str("token", pkg.SafePrefix(token, 10)).
+		Str("token", token).
 		Msg("Bot disconnected detected by monitor")
 
 	m.sseConnections.Range(func(key, value interface{}) bool {
@@ -183,8 +181,8 @@ func (m *BotStatusMonitor) notifyBotDisconnected(token string) {
 			select {
 			case conn.DisconnectC <- struct{}{}:
 				log.Debug().
-					Str("token", pkg.SafePrefix(token, 10)).
-					Str("session", pkg.SafePrefix(conn.SessionID, 8)).
+					Str("token", token).
+					Str("session", conn.SessionID).
 					Msg("Notified SSE connection of bot disconnect")
 			default:
 				// channel 已满或已关闭，跳过
