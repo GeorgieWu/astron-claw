@@ -25,7 +25,8 @@ func MetricsMiddleware(podIP string) gin.HandlerFunc {
 		start := time.Now()
 		funcName := c.FullPath()
 		if funcName == "" {
-			funcName = "unknown"
+			c.Next()
+			return
 		}
 
 		// Inject metrics context for handlers
