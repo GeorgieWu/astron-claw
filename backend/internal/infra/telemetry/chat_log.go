@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"go.opentelemetry.io/otel/log"
@@ -15,36 +16,27 @@ func EnsureLogger() {
 }
 
 type ChatLogRecord struct {
-	LogType   string
-	AppID     string
-	SessionID string
-	FALR      float64
-	FAFR      float64
-	Ret       int
-	IP        string
-	TraceID   string
-	Func      string
+	LogType   string  `json:"log_type"`
+	AppID     string  `json:"appid"`
+	SessionID string  `json:"session_id"`
+	FALR      float64 `json:"falr"`
+	FAFR      float64 `json:"fafr"`
+	Ret       int     `json:"ret"`
+	IP        string  `json:"ip"`
+	TraceID   string  `json:"trace_id"`
+	Func      string  `json:"func"`
 }
 
 func EmitChatLog(ctx context.Context, rec ChatLogRecord) {
-	logType := rec.LogType
-	if logType == "" {
-		logType = "server_log"
+	if rec.LogType == "" {
+		rec.LogType = "server_log"
 	}
+
+	body, _ := json.Marshal(rec)
 
 	var r log.Record
 	r.SetTimestamp(time.Now())
-	r.AddAttributes(
-		log.String("log_type", logType),
-		log.String("appid", rec.AppID),
-		log.String("session_id", rec.SessionID),
-		log.Float64("falr", rec.FALR),
-		log.Float64("fafr", rec.FAFR),
-		log.Int("ret", rec.Ret),
-		log.String("ip", rec.IP),
-		log.String("trace_id", rec.TraceID),
-		log.String("func", rec.Func),
-	)
+	r.SetBody(log.StringValue(string(body)))
 
 	ChatLogger.Emit(ctx, r)
 }
