@@ -40,7 +40,7 @@ func (s *SessionStore) CreateSession(ctx context.Context, token, sessionID strin
 	ctx, span := sessionTracer.Start(ctx, "session.create", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("astron.token_prefix", token),
+		attribute.String("astron.token_id", token),
 		attribute.String("astron.session_id", sessionID),
 	)
 
@@ -68,7 +68,7 @@ func (s *SessionStore) CreateSession(ctx context.Context, token, sessionID strin
 func (s *SessionStore) RemoveSessions(ctx context.Context, token string) error {
 	ctx, span := sessionTracer.Start(ctx, "session.remove", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
-	span.SetAttributes(attribute.String("astron.token_prefix", token))
+	span.SetAttributes(attribute.String("astron.token_id", token))
 	if err := s.db.WithContext(ctx).Where("token = ?", token).Delete(&model.ChatSession{}).Error; err != nil {
 		return fmt.Errorf("delete sessions: %w", err)
 	}
@@ -83,7 +83,7 @@ func (s *SessionStore) GetSession(ctx context.Context, token, sessionID string) 
 	ctx, span := sessionTracer.Start(ctx, "session.get", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("astron.token_prefix", token),
+		attribute.String("astron.token_id", token),
 		attribute.String("astron.session_id", sessionID),
 	)
 	var session model.ChatSession
@@ -108,7 +108,7 @@ type SessionInfo struct {
 func (s *SessionStore) GetSessions(ctx context.Context, token string) ([]SessionInfo, error) {
 	ctx, span := sessionTracer.Start(ctx, "session.list", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
-	span.SetAttributes(attribute.String("astron.token_prefix", token))
+	span.SetAttributes(attribute.String("astron.token_id", token))
 	// Try Redis first
 	sessionsKey := sessionsPrefix + token
 	cached, err := s.rdb.LRange(ctx, sessionsKey, 0, -1).Result()

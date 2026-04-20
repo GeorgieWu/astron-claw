@@ -653,7 +653,7 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 		ctx, msgSpan := bridgeTracer.Start(ctx, "bot.message.receive",
 			trace.WithSpanKind(trace.SpanKindInternal))
 		msgSpan.SetAttributes(
-			attribute.String("astron.token_prefix", token),
+			attribute.String("astron.token_id", token),
 			attribute.String("astron.method", method),
 			attribute.String("astron.message_type", msgType),
 		)
@@ -770,7 +770,7 @@ func (b *ConnectionBridge) sendToSession(ctx context.Context, token, sessionID s
 
 	eventType, _ := event["type"].(string)
 	span.SetAttributes(
-		attribute.String("astron.token_prefix", token),
+		attribute.String("astron.token_id", token),
 		attribute.String("astron.session_id", sessionID),
 		attribute.String("astron.event_type", eventType),
 	)

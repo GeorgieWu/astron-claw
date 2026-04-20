@@ -57,7 +57,7 @@ func (app *App) wsBot(c *gin.Context) {
 	ctx, regSpan := wsTracer.Start(c.Request.Context(), "bot.connection.register",
 		trace.WithSpanKind(trace.SpanKindInternal))
 	regSpan.SetAttributes(
-		attribute.String("astron.token_prefix", botToken),
+		attribute.String("astron.token_id", botToken),
 		attribute.String("astron.client_addr", clientAddr),
 	)
 
@@ -76,7 +76,7 @@ func (app *App) wsBot(c *gin.Context) {
 		unregCtx, unregSpan := wsTracer.Start(context.Background(), "bot.connection.unregister",
 			trace.WithSpanKind(trace.SpanKindInternal))
 		unregSpan.SetAttributes(
-			attribute.String("astron.token_prefix", botToken),
+			attribute.String("astron.token_id", botToken),
 		)
 		cleanupCtx, cancel := context.WithTimeout(unregCtx, 10*time.Second)
 		defer cancel()
