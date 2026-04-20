@@ -12,9 +12,9 @@ Astron-Claw 的 Span 参考总表，按稳定业务语义列出推荐的追踪�
 |-----------|----|----------|---------|------|----------|----------|
 | `HTTP {method}` | HTTP | SERVER | 无 | otelgin 自动创建的传输层入口 Span，例如 `HTTP POST` | `http.method`, `http.target`, `http.status_code`, `http.user_agent` | 所有 HTTP 请求 |
 | `chat.turn` | Chat | INTERNAL | `HTTP POST /bridge/chat` | 单轮对话主流程，从接收 chat 请求到本轮结束 | `token_id`, `session_id`, `turn_id`, `is_new_session`, `close_reason`, `user_input`, `bot_reply` | 每次 `POST /bridge/chat` |
-| `chat.session.resolve` | Chat | INTERNAL | `chat.turn` | 解析已有 session 或创建新 session | `token_id`, `session_id`, `is_new_session`, `error_code` | 每次 `POST /bridge/chat` |
-| `chat.bot.availability_check` | Chat | INTERNAL | `chat.turn` | 检查当前 Token 对应 Bot 是否可服务 | `token_id`, `bot_available`, `error_code` | 每次 `POST /bridge/chat` |
-| `chat.bot.dispatch` | Chat | PRODUCER | `chat.turn` | 将本轮用户消息派发给 Bot（经由 Worker Inbox 投递） | `token_id`, `session_id`, `turn_id`, `message_size`, `media_count`, `error_code` | 每次 `POST /bridge/chat` |
+| `chat.session.resolve` | Chat | INTERNAL | `chat.turn` | 解析已有 session 或创建新 session | `token_id`, `session_id`, `is_new_session`, `error_code`, `user_input` | 每次 `POST /bridge/chat` |
+| `chat.bot.availability_check` | Chat | INTERNAL | `chat.turn` | 检查当前 Token 对应 Bot 是否可服务 | `token_id`, `bot_available`, `error_code`, `user_input` | 每次 `POST /bridge/chat` |
+| `chat.bot.dispatch` | Chat | PRODUCER | `chat.turn` | 将本轮用户消息派发给 Bot（经由 Worker Inbox 投递） | `token_id`, `session_id`, `turn_id`, `message_size`, `media_count`, `error_code`, `user_input` | 每次 `POST /bridge/chat` |
 | `chat.response.stream` | Chat | INTERNAL | `chat.turn` | 本轮 SSE 流生命周期，从首个事件到关闭 | `token_id`, `session_id`, `turn_id`, `close_reason`, `stream_duration_ms`, `bot_reply` | 每次 `POST /bridge/chat` |
 | `chat.cancel` | Chat | INTERNAL | `chat.turn` | 客户端提前断开后，向 Bot 发送取消语义 | `token_id`, `session_id`, `turn_id`, `cancel_reason` | 客户端提前断开时 |
 | `bot.message.receive` | Bot | INTERNAL | 无（`context.Background()`） | 接收并解析 Bot WebSocket 消息（JSON-RPC） | `token_id`, `message_type`, `method`, `session_id`, `turn_id` | Bot 发送消息时 |

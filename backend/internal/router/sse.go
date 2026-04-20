@@ -154,6 +154,7 @@ func (app *App) chatSSE(c *gin.Context) {
 		if !connected {
 			availSpan.SetStatus(codes.Error, "no bot connected")
 			availSpan.SetAttributes(attribute.Int("astron.error_code", model.CodeChatNoBot))
+			app.storeSpanContent(content, availSpan, "astron.user_input")
 			availSpan.End()
 			turnSpan.SetStatus(codes.Error, "no bot connected")
 			log.Warn().Str("token", tp).Msg("SSE: no bot connected")
@@ -176,6 +177,7 @@ func (app *App) chatSSE(c *gin.Context) {
 			if !found {
 				resolveSpan.SetStatus(codes.Error, "session not found")
 				resolveSpan.SetAttributes(attribute.Int("astron.error_code", model.CodeSessionNotFound))
+				app.storeSpanContent(content, resolveSpan, "astron.user_input")
 				resolveSpan.End()
 				turnSpan.SetStatus(codes.Error, "session not found")
 				log.Warn().Str("session", *body.SessionID).Str("token", tp).
@@ -193,6 +195,7 @@ func (app *App) chatSSE(c *gin.Context) {
 				resolveSpan.SetStatus(codes.Error, "create session failed")
 				resolveSpan.SetAttributes(attribute.Int("astron.error_code", model.CodeSessionCreateFailed))
 				resolveSpan.RecordError(err)
+				app.storeSpanContent(content, resolveSpan, "astron.user_input")
 				resolveSpan.End()
 				turnSpan.SetStatus(codes.Error, "create session failed")
 				log.Error().Err(err).Str("token", tp).Msg("SSE: failed to create session")
@@ -230,6 +233,7 @@ func (app *App) chatSSE(c *gin.Context) {
 			dispatchSpan.SetStatus(codes.Error, "send to bot failed")
 			dispatchSpan.SetAttributes(attribute.Int("astron.error_code", model.CodeChatSendFailed))
 			dispatchSpan.RecordError(err)
+			app.storeSpanContent(content, dispatchSpan, "astron.user_input")
 			dispatchSpan.End()
 			turnSpan.SetStatus(codes.Error, "send to bot failed")
 			log.Error().Err(err).Str("token", tp).Msg("SSE: send_to_bot failed")
