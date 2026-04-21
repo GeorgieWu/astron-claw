@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"go.opentelemetry.io/otel/log"
@@ -32,11 +31,28 @@ func EmitChatLog(ctx context.Context, rec ChatLogRecord) {
 		rec.LogType = "server_log"
 	}
 
-	body, _ := json.Marshal(rec)
+	// Body: simple success/failed message
+	bodyMsg := "success"
+	if rec.Ret != 0 {
+		bodyMsg = "failed"
+	}
 
 	var r log.Record
 	r.SetTimestamp(time.Now())
-	r.SetBody(log.StringValue(string(body)))
+	r.SetBody(log.StringValue(bodyMsg))
+
+	// All fields go to Attributes
+	r.AddAttributes(
+		log.String("log_type", rec.LogType),
+		log.String("appid", rec.AppID),
+		log.String("session_id", rec.SessionID),
+		log.Float64("falr", rec.FALR),
+		log.Float64("fafr", rec.FAFR),
+		log.Int("ret", rec.Ret),
+		log.String("ip", rec.IP),
+		log.String("trace_id", rec.TraceID),
+		log.String("func", rec.Func),
+	)
 
 	ChatLogger.Emit(ctx, r)
 }
