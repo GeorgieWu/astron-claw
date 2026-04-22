@@ -45,6 +45,7 @@ func main() {
 	}
 	telemetry.EnsureInstruments()
 	telemetry.EnsureLogger()
+	telemetry.SetRedisForMetrics(rdb)
 
 	// Run database migrations
 	if err := infra.RunMigrations(ctx, cfg.MySQL, rdb); err != nil {

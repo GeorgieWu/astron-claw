@@ -13,9 +13,9 @@ Astron-Claw 使用 OpenTelemetry SDK 采集指标，通过 OTLP gRPC 协议推�
 | 指标名 | 类型 | 说明 | 维度 |
 |--------|------|------|------|
 | `bridge.chat.requests` | Counter | 请求总数（所有 HTTP 接口） | `func`, `ip`, `code` |
-| `bridge.chat.request.duration` | Histogram | 请求处理耗时（普通 HTTP 为总耗时，SSE 为首字节延迟） | `func`, `ip`, `code` |
+| `bridge.chat.request.duration` | Histogram | 请求处理耗时（普通 HTTP 为总耗时，SSE 为首个 Redis 结果延迟） | `func`, `ip`, `code` |
 | `bridge.chat.stream.duration` | Histogram | SSE 流持续时间（仅 `/bridge/chat`） | `func`, `ip`, `code`, `close_reason` |
-| `bridge.chat.active_streams` | UpDownCounter (Gauge) | 当前活跃 SSE 流数量（仅 `/bridge/chat`） | `func`, `ip` |
+| `bridge.bot.alive_count` | Gauge | 30 秒内存活的 Bot 数量 | 无 |
 
 
 **`code` 取值对照：**
@@ -53,25 +53,22 @@ Astron-Claw 使用 OpenTelemetry SDK 采集指标，通过 OTLP gRPC 协议推�
 
 **`func` 取值对照：**
 
-取值为 Gin handler 函数名（通过 `c.HandlerName()` 提取末段并去除 `-fm` 后缀）。
+取值为 Gin 路由路径（通过 `c.FullPath()` 获取）。
 
-| func | 路由 | 说明 |
-|------|------|------|
-| `healthCheck` | `GET /api/health` | 健康检查 |
-| `createToken` | `POST /api/token` | 创建 Token |
-| `validateToken` | `POST /api/token/validate` | 验证 Token |
-| `uploadMedia` | `POST /api/media/upload` | 上传媒体文件 |
-| `chatSSE` | `POST /bridge/chat` | Chat SSE 请求 |
-| `listSessions` | `GET /bridge/chat/sessions` | 列出 Session |
-| `createSession` | `POST /bridge/chat/sessions` | 创建 Session |
-| `listTokens` | `GET /api/admin/tokens` | 列出 Token（Admin） |
-| `adminCreateToken` | `POST /api/admin/tokens` | 创建 Token（Admin） |
-| `adminUpdateToken` | `PATCH /api/admin/tokens/:token` | 更新 Token（Admin） |
-| `adminDeleteToken` | `DELETE /api/admin/tokens/:token` | 删除 Token（Admin） |
-| `adminAuthSetup` | `POST /api/admin/auth/setup` | 设置 Admin 密码 |
-| `adminAuthLogin` | `POST /api/admin/auth/login` | Admin 登录 |
-| `adminAuthLogout` | `POST /api/admin/auth/logout` | Admin 登出 |
-| `adminAuthStatus` | `GET /api/admin/auth/status` | Admin 认证状态 |
-| `adminCleanup` | `POST /api/admin/cleanup` | 清理过期数据 |
+| func | 说明 |
+|------|------|
+| `/api/health` | 健康检查 |
+| `/api/token` | 创建 Token |
+| `/api/token/validate` | 验证 Token |
+| `/api/media/upload` | 上传媒体文件 |
+| `/bridge/chat` | Chat SSE 请求 |
+| `/bridge/chat/sessions` | 列出 / 创建 Session |
+| `/api/admin/tokens` | 列出 / 创建 Token（Admin） |
+| `/api/admin/tokens/:token` | 更新 / 删除 Token（Admin） |
+| `/api/admin/auth/setup` | 设置 Admin 密码 |
+| `/api/admin/auth/login` | Admin 登录 |
+| `/api/admin/auth/logout` | Admin 登出 |
+| `/api/admin/auth/status` | Admin 认证状态 |
+| `/api/admin/cleanup` | 清理过期数据 |
 
-**注意**：`/bridge/bot` WebSocket 接口不记录在这些指标中。
+**注意**：`/bridge/bot` WebSocket 接口不记录在这些指标中。未匹配路由（`c.FullPath()` 为空）的请求不记录指标。

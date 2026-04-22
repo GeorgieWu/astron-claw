@@ -235,7 +235,8 @@ func (m *TokenManager) BulkCheckBotOnline(ctx context.Context, tokens []string) 
 // CountOnlineBots returns the total number of online bots.
 func (m *TokenManager) CountOnlineBots(ctx context.Context) int {
 	cutoff := float64(time.Now().Unix()) - 30 // BotTTL = 30s
-	count, err := m.rdb.ZCount(ctx, "bridge:bot_alive", fmt.Sprintf("%f", cutoff), "+inf").Result()
+	// "(" prefix = exclusive, so score == cutoff is excluded (aligned with BotStatusMonitor's >= check)
+	count, err := m.rdb.ZCount(ctx, "bridge:bot_alive", "("+fmt.Sprintf("%f", cutoff), "+inf").Result()
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to count online bots")
 		return 0

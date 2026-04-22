@@ -468,8 +468,9 @@ func (b *ConnectionBridge) IsBotConnected(ctx context.Context, token string) boo
 // GetConnectionsSummary returns per-token bot online status.
 func (b *ConnectionBridge) GetConnectionsSummary(ctx context.Context) map[string]bool {
 	cutoff := float64(time.Now().Unix()) - BotTTL.Seconds()
+	// "(" prefix = exclusive, so score == cutoff is excluded (aligned with BotStatusMonitor's >= check)
 	alive, _ := b.rdb.ZRangeByScore(ctx, BotAliveKey, &redis.ZRangeBy{
-		Min: fmt.Sprintf("%f", cutoff),
+		Min: "(" + fmt.Sprintf("%f", cutoff),
 		Max: "+inf",
 	}).Result()
 	result := make(map[string]bool, len(alive))
