@@ -67,10 +67,10 @@ func (app *App) chatSSE(c *gin.Context) {
 
 	// Emit OTel log on every return path
 	defer func() {
-		logCode := 0
+		logCode := "0"
 		if raw, exists := c.Get("metrics_code"); exists {
 			if codeStr, ok := raw.(string); ok {
-				logCode, _ = strconv.Atoi(codeStr)
+				logCode = codeStr
 			}
 		}
 
@@ -84,15 +84,16 @@ func (app *App) chatSSE(c *gin.Context) {
 		traceID := turnSpan.SpanContext().TraceID().String()
 
 		telemetry.EmitChatLog(ctx, telemetry.ChatLogRecord{
-			LogType:   "metrics_log",
-			AppID:     tokenStr,
-			SessionID: logSession,
-			FALR:      durationMs,
-			FAFR:      logTTFBMs,
-			Ret:       logCode,
-			IP:        c.GetString("metrics_ip"),
-			TraceID:   traceID,
-			Func:      c.GetString("metrics_func"),
+			LogType:     "metrics_log",
+			AppID:       tokenStr,
+			SessionID:   logSession,
+			FALR:        durationMs,
+			FAFR:        logTTFBMs,
+			Ret:         logCode,
+			IP:          c.GetString("metrics_ip"),
+			TraceID:     traceID,
+			Func:        c.GetString("metrics_func"),
+			ServiceName: app.Config.OTLP.ServiceName,
 		})
 	}()
 
