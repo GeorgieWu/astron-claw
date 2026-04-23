@@ -188,7 +188,7 @@ func Load() *AppConfig {
 		OTLP: OtlpConfig{
 			Enabled:        getEnvBool("OTLP_ENABLED", false),
 			ServiceName:    getEnv("OTLP_SERVICE_NAME", "astron-claw"),
-			Endpoint:       getEnv("OTLP_ENDPOINT", "localhost:4317"),
+			Endpoint:       buildOtlpEndpoint(),
 			Insecure:       getEnvBool("OTLP_INSECURE", false),
 			MetricsEnabled: getEnvBool("OTLP_METRICS_ENABLED", true),
 			TracesEnabled:  getEnvBool("OTLP_TRACES_ENABLED", false),
@@ -236,6 +236,16 @@ func getEnvBool(key string, defaultVal bool) bool {
 		return strings.ToLower(v) == "true"
 	}
 	return defaultVal
+}
+
+// buildOtlpEndpoint constructs the OTLP collector endpoint from POD_IP and
+// OTLP_PORT. In Kubernetes, POD_IP is injected via the Downward API and points
+// to the node-local collector sidecar/DaemonSet. Falls back to localhost when
+// POD_IP is unset (local development).
+func buildOtlpEndpoint() string {
+	port := getEnv("OTLP_PORT", "4317")
+	host := getEnv("POD_IP", "localhost")
+	return host + ":" + port
 }
 
 func splitCSV(s string) []string {
