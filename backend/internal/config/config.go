@@ -99,6 +99,7 @@ type StorageConfig struct {
 	Region         string
 	TTL            int
 	PublicRead     bool
+	PathStyle      bool
 }
 
 type OtlpConfig struct {
@@ -182,6 +183,7 @@ func Load() *AppConfig {
 			Region:         getEnv("OSS_REGION", "us-east-1"),
 			TTL:            getEnvInt("OSS_TTL", 157788000),
 			PublicRead:     getEnvBool("OSS_PUBLIC_READ", true),
+			PathStyle:      getEnvBool("OSS_PATH_STYLE", true),
 		},
 		OTLP: OtlpConfig{
 			Enabled:        getEnvBool("OTLP_ENABLED", false),

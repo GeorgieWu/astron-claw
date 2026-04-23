@@ -35,7 +35,7 @@ func (s *S3Storage) Start() error {
 		func(service, region string, options ...interface{}) (aws.Endpoint, error) {
 			return aws.Endpoint{
 				URL:               s.cfg.Endpoint,
-				HostnameImmutable: true,
+				HostnameImmutable: s.cfg.PathStyle,
 			}, nil
 		},
 	)
@@ -53,12 +53,12 @@ func (s *S3Storage) Start() error {
 	}
 
 	s.client = s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.UsePathStyle = true
+		o.UsePathStyle = s.cfg.PathStyle
 		// OSS-compatible endpoints reject the SDK's default HTTPS trailer checksum uploads.
 		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 	})
 
-	log.Info().Str("endpoint", s.cfg.Endpoint).Msg("S3 client initialised")
+	log.Info().Str("endpoint", s.cfg.Endpoint).Bool("path_style", s.cfg.PathStyle).Msg("S3 client initialised")
 	return nil
 }
 
