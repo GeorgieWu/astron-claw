@@ -78,6 +78,7 @@ func (s *S3Storage) EnsureBucket() error {
 		log.Info().Str("bucket", s.cfg.Bucket).Msg("S3 bucket already exists, skipping policy/lifecycle setup")
 		return nil
 	}
+	log.Warn().Err(err).Str("bucket", s.cfg.Bucket).Msg("HeadBucket failed, attempting to create bucket")
 
 	// Create bucket
 	_, err = s.client.CreateBucket(ctx, &s3.CreateBucketInput{
