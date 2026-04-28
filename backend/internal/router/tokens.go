@@ -9,13 +9,20 @@ import (
 )
 
 func (app *App) createToken(c *gin.Context) {
-	token, err := app.TokenMgr.Generate(c.Request.Context(), "", 0)
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		// Allow empty body
+	}
+
+	token, err := app.TokenMgr.Generate(c.Request.Context(), body.Name, 0)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to generate token")
 		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
-	log.Info().Str("token", token).Msg("Token created via public API")
+	log.Info().Str("token", token).Str("name", body.Name).Msg("Token created via public API")
 	c.JSON(200, gin.H{"code": 0, "token": token})
 }
 
