@@ -152,6 +152,14 @@ func NewConnectionBridge(rdb redis.UniversalClient, sessionStore *SessionStore, 
 	}
 }
 
+// SetWorkerInboxConsumers overrides the default number of worker inbox consumers.
+// Must be called before Start.
+func (b *ConnectionBridge) SetWorkerInboxConsumers(n int) {
+	if n > 0 {
+		b.workerInboxConsumers = n
+	}
+}
+
 // Start begins the heartbeat goroutine.
 func (b *ConnectionBridge) Start() {
 	b.wg.Add(3 + b.workerInboxConsumers + b.artifactCleanupWorkers)

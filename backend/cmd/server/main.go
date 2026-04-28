@@ -75,6 +75,7 @@ func main() {
 	// Initialize session store and bridge
 	sessionStore := service.NewSessionStore(db, rdb)
 	bridge := service.NewConnectionBridge(rdb, sessionStore, queue)
+	bridge.SetWorkerInboxConsumers(cfg.Server.WorkerInboxConsumers)
 	bridge.Start()
 
 	// Initialize bot status monitor

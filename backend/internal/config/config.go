@@ -54,10 +54,12 @@ func (c MysqlConfig) DSNWithoutDB() string {
 }
 
 type RedisConfig struct {
-	Password string
-	DB       int
-	Addrs    []string
-	Cluster  bool
+	Password     string
+	DB           int
+	Addrs        []string
+	Cluster      bool
+	PoolSize     int
+	MinIdleConns int
 }
 
 // IsCluster returns true when Redis Cluster mode is explicitly enabled or
@@ -73,14 +75,15 @@ type DBPoolConfig struct {
 }
 
 type ServerConfig struct {
-	Host           string
-	Port           int
-	Workers        int
-	LogLevel       string
-	AccessLog      bool
-	WSPingInterval int
-	WSPingTimeout  int
-	SecureCookie   bool
+	Host                 string
+	Port                 int
+	Workers              int
+	LogLevel             string
+	AccessLog            bool
+	WSPingInterval       int
+	WSPingTimeout        int
+	SecureCookie         bool
+	WorkerInboxConsumers int
 }
 
 type QueueConfig struct {
@@ -153,20 +156,23 @@ func Load() *AppConfig {
 			Database: getEnv("MYSQL_DATABASE", "astron_claw"),
 		},
 		Redis: RedisConfig{
-			Password: getEnv("REDIS_PASSWORD", ""),
-			DB:       getEnvInt("REDIS_DB", 0),
-			Addrs:    splitCSV(getEnv("REDIS_ADDRS", "127.0.0.1:6379")),
-			Cluster:  getEnvBool("REDIS_CLUSTER", false),
+			Password:     getEnv("REDIS_PASSWORD", ""),
+			DB:           getEnvInt("REDIS_DB", 0),
+			Addrs:        splitCSV(getEnv("REDIS_ADDRS", "127.0.0.1:6379")),
+			Cluster:      getEnvBool("REDIS_CLUSTER", false),
+			PoolSize:     getEnvInt("REDIS_POOL_SIZE", runtime.GOMAXPROCS(0)*10),
+			MinIdleConns: getEnvInt("REDIS_MIN_IDLE_CONNS", 10),
 		},
 		Server: ServerConfig{
-			Host:           getEnv("SERVER_HOST", "0.0.0.0"),
-			Port:           getEnvInt("SERVER_PORT", 8765),
-			Workers:        getEnvInt("SERVER_WORKERS", runtime.NumCPU()+1),
-			LogLevel:       getEnv("SERVER_LOG_LEVEL", "info"),
-			AccessLog:      getEnvBool("SERVER_ACCESS_LOG", true),
-			WSPingInterval: getEnvInt("WS_PING_INTERVAL", 10),
-			WSPingTimeout:  getEnvInt("WS_PING_TIMEOUT", 10),
-			SecureCookie:   getEnvBool("COOKIE_SECURE", false),
+			Host:                 getEnv("SERVER_HOST", "0.0.0.0"),
+			Port:                 getEnvInt("SERVER_PORT", 8765),
+			Workers:              getEnvInt("SERVER_WORKERS", runtime.NumCPU()+1),
+			LogLevel:             getEnv("SERVER_LOG_LEVEL", "info"),
+			AccessLog:            getEnvBool("SERVER_ACCESS_LOG", true),
+			WSPingInterval:       getEnvInt("WS_PING_INTERVAL", 10),
+			WSPingTimeout:        getEnvInt("WS_PING_TIMEOUT", 10),
+			SecureCookie:         getEnvBool("COOKIE_SECURE", false),
+			WorkerInboxConsumers: getEnvInt("WORKER_INBOX_CONSUMERS", 4),
 		},
 		Queue: QueueConfig{
 			Type:         getEnv("QUEUE_TYPE", "redis_stream"),
